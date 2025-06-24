@@ -88,43 +88,17 @@ def profile_c_layernorm(x, w, b, iterations=1000):
     """Profile the C layernorm implementation"""
     layernorm_dir = os.path.join(os.path.dirname(__file__), 'doc', 'layernorm')
     
-    # Write a custom C timing program
+    # Write a timing program that uses the actual layernorm.c implementation
     timing_c_code = '''
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
 
+// Forward declaration - actual implementation comes from layernorm.c
 void layernorm_forward(float* out, float* mean, float* rstd,
                        float* inp, float* weight, float* bias,
-                       int B, int T, int C) {
-    float eps = 1e-5f;
-    for (int b = 0; b < B; b++) {
-        for (int t = 0; t < T; t++) {
-            float* x = inp + b * T * C + t * C;
-            float m = 0.0f;
-            for (int i = 0; i < C; i++) {
-                m += x[i];
-            }
-            m = m/C;
-            float v = 0.0f;
-            for (int i = 0; i < C; i++) {
-                float xshift = x[i] - m;
-                v += xshift * xshift;
-            }
-            v = v/C;
-            float s = 1.0f / sqrtf(v + eps);
-            float* out_bt = out + b * T * C + t * C;
-            for (int i = 0; i < C; i++) {
-                float n = (s * (x[i] - m));
-                float o = n * weight[i] + bias[i];
-                out_bt[i] = o;
-            }
-            mean[b * T + t] = m;
-            rstd[b * T + t] = s;
-        }
-    }
-}
+                       int B, int T, int C);
 
 int main() {
     int B = 8, T = 64, C = 256;
@@ -172,12 +146,14 @@ int main() {
     # Write timing program
     timing_c_path = os.path.join(layernorm_dir, 'timing_layernorm.c')
     timing_exe_path = os.path.join(layernorm_dir, 'timing_layernorm')
+    layernorm_c_path = os.path.join(layernorm_dir, 'layernorm.c')
     
     with open(timing_c_path, 'w') as f:
         f.write(timing_c_code)
     
-    # Build timing program
-    build_cmd = ['gcc', timing_c_path, '-o', timing_exe_path, '-lm', '-O3']
+    # Build timing program, linking with the layernorm functions
+    layernorm_functions_path = os.path.join(layernorm_dir, 'layernorm_functions.c')
+    build_cmd = ['gcc', timing_c_path, layernorm_functions_path, '-o', timing_exe_path, '-lm', '-O3']
     result = subprocess.run(build_cmd, capture_output=True, text=True, cwd=layernorm_dir)
     if result.returncode != 0:
         print(f"Timing build failed: {result.stderr}")

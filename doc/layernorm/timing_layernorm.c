@@ -4,36 +4,10 @@
 #include <math.h>
 #include <time.h>
 
+// Forward declaration - actual implementation comes from layernorm.c
 void layernorm_forward(float* out, float* mean, float* rstd,
                        float* inp, float* weight, float* bias,
-                       int B, int T, int C) {
-    float eps = 1e-5f;
-    for (int b = 0; b < B; b++) {
-        for (int t = 0; t < T; t++) {
-            float* x = inp + b * T * C + t * C;
-            float m = 0.0f;
-            for (int i = 0; i < C; i++) {
-                m += x[i];
-            }
-            m = m/C;
-            float v = 0.0f;
-            for (int i = 0; i < C; i++) {
-                float xshift = x[i] - m;
-                v += xshift * xshift;
-            }
-            v = v/C;
-            float s = 1.0f / sqrtf(v + eps);
-            float* out_bt = out + b * T * C + t * C;
-            for (int i = 0; i < C; i++) {
-                float n = (s * (x[i] - m));
-                float o = n * weight[i] + bias[i];
-                out_bt[i] = o;
-            }
-            mean[b * T + t] = m;
-            rstd[b * T + t] = s;
-        }
-    }
-}
+                       int B, int T, int C);
 
 int main() {
     int B = 8, T = 64, C = 256;
