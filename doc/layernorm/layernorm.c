@@ -9,36 +9,70 @@
 void layernorm_forward(float* out, float* mean, float* rstd,
                        float* inp, float* weight, float* bias,
                        int B, int T, int C) {
-    float eps = 1e-5f;
+    const float eps = 1e-5f;
+    const float inv_C = 1.0f / C;
+    
     for (int b = 0; b < B; b++) {
         for (int t = 0; t < T; t++) {
             // seek to the input position inp[b,t,:]
-            float* x = inp + b * T * C + t * C;
-            // calculate the mean
-            float m = 0.0f;
+            const float* __restrict__ x = inp + b * T * C + t * C;
+            float* __restrict__ out_bt = out + b * T * C + t * C;
+            const float* __restrict__ w = weight;
+            const float* __restrict__ bias_ptr = bias;
+            
+            // Single pass: compute mean using Kahan summation for better numerical stability
+            float sum = 0.0f;
+            float c = 0.0f; // Compensation for lost low-order bits
             for (int i = 0; i < C; i++) {
-                m += x[i];
+                float y = x[i] - c;
+                float t_sum = sum + y;
+                c = (t_sum - sum) - y;
+                sum = t_sum;
             }
-            m = m/C;
-            // calculate the variance (without any bias correction)
-            float v = 0.0f;
-            for (int i = 0; i < C; i++) {
-                float xshift = x[i] - m;
-                v += xshift * xshift;
+            const float m = sum * inv_C;
+            
+            // Second pass: compute variance with unrolled loop for better performance
+            float var_sum = 0.0f;
+            int i = 0;
+            // Unroll by 4 for better pipeline utilization
+            for (; i <= C - 4; i += 4) {
+                float d0 = x[i] - m;
+                float d1 = x[i+1] - m;
+                float d2 = x[i+2] - m;
+                float d3 = x[i+3] - m;
+                var_sum += d0*d0 + d1*d1 + d2*d2 + d3*d3;
             }
-            v = v/C;
-            // calculate the rstd
-            float s = 1.0f / sqrtf(v + eps);
-            // seek to the output position in out[b,t,:]
-            float* out_bt = out + b * T * C + t * C;
-            for (int i = 0; i < C; i++) {
-                float n = (s * (x[i] - m)); // normalized output
-                float o = n * weight[i] + bias[i]; // scale and shift it
-                out_bt[i] = o; // write
+            // Handle remaining elements
+            for (; i < C; i++) {
+                float d = x[i] - m;
+                var_sum += d * d;
             }
+            
+            const float variance = var_sum * inv_C;
+            const float s_inv = 1.0f / sqrtf(variance + eps);
+            
+            // Third pass: compute output with unrolled normalization
+            i = 0;
+            for (; i <= C - 4; i += 4) {
+                float n0 = (x[i] - m) * s_inv;
+                float n1 = (x[i+1] - m) * s_inv;
+                float n2 = (x[i+2] - m) * s_inv;
+                float n3 = (x[i+3] - m) * s_inv;
+                
+                out_bt[i] = n0 * w[i] + bias_ptr[i];
+                out_bt[i+1] = n1 * w[i+1] + bias_ptr[i+1];
+                out_bt[i+2] = n2 * w[i+2] + bias_ptr[i+2];
+                out_bt[i+3] = n3 * w[i+3] + bias_ptr[i+3];
+            }
+            // Handle remaining elements
+            for (; i < C; i++) {
+                float normalized = (x[i] - m) * s_inv;
+                out_bt[i] = normalized * w[i] + bias_ptr[i];
+            }
+            
             // cache the mean and rstd for the backward pass later
             mean[b * T + t] = m;
-            rstd[b * T + t] = s;
+            rstd[b * T + t] = s_inv;
         }
     }
 }
