@@ -9,33 +9,73 @@
 void layernorm_forward(float* out, float* mean, float* rstd,
                        float* inp, float* weight, float* bias,
                        int B, int T, int C) {
-    float eps = 1e-5f;
+    const float eps = 1e-5f;
+    const float inv_C = 1.0f / C;
+    
     for (int b = 0; b < B; b++) {
         for (int t = 0; t < T; t++) {
             // seek to the input position inp[b,t,:]
             float* x = inp + b * T * C + t * C;
-            // calculate the mean
-            float m = 0.0f;
-            for (int i = 0; i < C; i++) {
-                m += x[i];
-            }
-            m = m/C;
-            // calculate the variance (without any bias correction)
-            float v = 0.0f;
-            for (int i = 0; i < C; i++) {
-                float xshift = x[i] - m;
-                v += xshift * xshift;
-            }
-            v = v/C;
-            // calculate the rstd
-            float s = 1.0f / sqrtf(v + eps);
-            // seek to the output position in out[b,t,:]
             float* out_bt = out + b * T * C + t * C;
-            for (int i = 0; i < C; i++) {
-                float n = (s * (x[i] - m)); // normalized output
-                float o = n * weight[i] + bias[i]; // scale and shift it
-                out_bt[i] = o; // write
+            
+            // Calculate mean and variance with aggressive unrolling
+            float sum = 0.0f;
+            float sum_sq = 0.0f;
+            
+            // Unroll loop by 8 for better performance and use accumulators
+            int i = 0;
+            float sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f, sum4 = 0.0f;
+            float sq1 = 0.0f, sq2 = 0.0f, sq3 = 0.0f, sq4 = 0.0f;
+            
+            for (; i < C - 7; i += 8) {
+                float x0 = x[i], x1 = x[i+1], x2 = x[i+2], x3 = x[i+3];
+                float x4 = x[i+4], x5 = x[i+5], x6 = x[i+6], x7 = x[i+7];
+                
+                sum1 += x0 + x4;
+                sum2 += x1 + x5;
+                sum3 += x2 + x6;
+                sum4 += x3 + x7;
+                
+                sq1 += x0*x0 + x4*x4;
+                sq2 += x1*x1 + x5*x5;
+                sq3 += x2*x2 + x6*x6;
+                sq4 += x3*x3 + x7*x7;
             }
+            
+            sum = sum1 + sum2 + sum3 + sum4;
+            sum_sq = sq1 + sq2 + sq3 + sq4;
+            
+            // Handle remaining elements
+            for (; i < C; i++) {
+                float xi = x[i];
+                sum += xi;
+                sum_sq += xi * xi;
+            }
+            
+            float m = sum * inv_C;
+            float v = sum_sq * inv_C - m * m;
+            float s = 1.0f / sqrtf(v + eps);
+            
+            // Compute output in single pass
+            i = 0;
+            for (; i < C - 3; i += 4) {
+                float n0 = s * (x[i] - m);
+                float n1 = s * (x[i+1] - m);
+                float n2 = s * (x[i+2] - m);
+                float n3 = s * (x[i+3] - m);
+                
+                out_bt[i] = n0 * weight[i] + bias[i];
+                out_bt[i+1] = n1 * weight[i+1] + bias[i+1];
+                out_bt[i+2] = n2 * weight[i+2] + bias[i+2];
+                out_bt[i+3] = n3 * weight[i+3] + bias[i+3];
+            }
+            
+            // Handle remaining elements
+            for (; i < C; i++) {
+                float n = s * (x[i] - m);
+                out_bt[i] = n * weight[i] + bias[i];
+            }
+            
             // cache the mean and rstd for the backward pass later
             mean[b * T + t] = m;
             rstd[b * T + t] = s;
