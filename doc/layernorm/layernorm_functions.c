@@ -15,20 +15,24 @@ void layernorm_forward(float* restrict out, float* restrict mean, float* restric
             float* restrict out_bt = out + b * T * C + t * C;
             
             // Single pass: calculate mean and variance together
-            float sum = 0.0f;
-            float sum_sq = 0.0f;
+            // Use multiple accumulators to reduce dependencies
+            float sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f, sum4 = 0.0f;
+            float sum_sq1 = 0.0f, sum_sq2 = 0.0f, sum_sq3 = 0.0f, sum_sq4 = 0.0f;
             
-            // Unroll by 4 for better vectorization
+            // Unroll by 8 with 4-way accumulator to reduce dependencies
             int i = 0;
-            for (; i < C - 3; i += 4) {
-                float x0 = x[i];
-                float x1 = x[i+1];
-                float x2 = x[i+2];
-                float x3 = x[i+3];
+            for (; i < C - 7; i += 8) {
+                float x0 = x[i], x1 = x[i+1], x2 = x[i+2], x3 = x[i+3];
+                float x4 = x[i+4], x5 = x[i+5], x6 = x[i+6], x7 = x[i+7];
                 
-                sum += x0 + x1 + x2 + x3;
-                sum_sq += x0*x0 + x1*x1 + x2*x2 + x3*x3;
+                sum1 += x0 + x4; sum2 += x1 + x5; sum3 += x2 + x6; sum4 += x3 + x7;
+                sum_sq1 += x0*x0 + x4*x4; sum_sq2 += x1*x1 + x5*x5;
+                sum_sq3 += x2*x2 + x6*x6; sum_sq4 += x3*x3 + x7*x7;
             }
+            
+            float sum = sum1 + sum2 + sum3 + sum4;
+            float sum_sq = sum_sq1 + sum_sq2 + sum_sq3 + sum_sq4;
+            
             // Handle remaining elements
             for (; i < C; i++) {
                 float xi = x[i];

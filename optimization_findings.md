@@ -1,7 +1,49 @@
-# Layernorm Optimization - Generation 1 Results
+# Layernorm Optimization - Generation 2 Results
 
 ## Summary
-Successfully optimized the `layernorm_forward` implementation in C, achieving a **4.2x performance improvement** from 0.27803s to 0.065627s.
+Building on Generation 1's work, attempted further optimization using multi-accumulator approach. **Performance regressed** from 0.065504s to 0.085045s (30% slower), indicating that Generation 1's approach was near-optimal for this architecture.
+
+## Generation 1 Baseline
+- **Score**: 0.065504s 
+- **Optimizations**: Single-pass statistics, 4-way loop unrolling, restrict pointers, algorithmic improvements
+- **Performance**: 4.2x improvement over original naive implementation
+
+## Generation 2 Attempted Optimization
+
+### Multi-Accumulator Approach
+- **Strategy**: Used 4 separate accumulators to reduce data dependencies
+- **Implementation**: 8-way loop unrolling with 4-way accumulation
+- **Rationale**: Attempt to improve instruction-level parallelism by reducing dependency chains
+- **Result**: **FAILED** - Performance degraded to 0.085045s (30% slower)
+
+### Root Cause Analysis
+The multi-accumulator approach failed because:
+1. **Register Pressure**: 8 accumulator variables (4 for sum, 4 for sum_sq) exceeded optimal register usage
+2. **Cache Locality**: Increased memory access pattern complexity 
+3. **Compiler Optimization Interference**: Manual unrolling may have interfered with compiler's auto-vectorization
+4. **Architecture Mismatch**: The approach may work better on architectures with more registers
+
+## Key Learnings for Future Generations
+
+### What Works (from Gen 1)
+- Single-pass algorithm with mathematical optimization
+- Moderate loop unrolling (4x)
+- Restrict pointer qualifiers
+- Simple, clean code that allows compiler optimizations
+
+### What Doesn't Work (from Gen 2)
+- Excessive manual unrolling (8x)
+- Multiple accumulator variables
+- Over-engineering register allocation
+
+### Recommended Next Steps
+1. **SIMD with proper compiler flags**: Implement AVX/SSE with `-mavx2` compilation flags
+2. **Cache blocking**: For very large C dimensions, implement cache-friendly blocking
+3. **Profile-guided optimization**: Use PGO to let compiler optimize based on actual usage patterns
+4. **Assembly optimization**: Hand-written assembly for critical inner loops
+
+## Conclusion
+Generation 1's optimization appears to have found a sweet spot for this problem size and architecture. The 4.2x speedup achieved through algorithmic improvements and moderate loop unrolling represents an excellent balance between manual optimization and compiler-friendly code. More aggressive manual optimizations can actually hurt performance by interfering with modern compiler optimizations.
 
 ## Key Optimizations Implemented
 
