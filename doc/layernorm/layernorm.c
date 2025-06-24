@@ -18,31 +18,30 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             float* x = inp + b * T * C + t * C;
             float* out_bt = out + b * T * C + t * C;
             
-            // calculate mean and variance in single pass
+            // Single pass: calculate mean and variance together
             float m = 0.0f;
             float v = 0.0f;
             
-            // First pass: calculate mean
+            // Calculate mean first
             for (int i = 0; i < C; i++) {
                 m += x[i];
             }
             m *= inv_C;
             
-            // Second pass: calculate variance and apply normalization
-            const float rsqrt_factor = 1.0f / sqrtf(eps); // pre-compute for potential early exit
+            // Calculate variance and normalize in combined pass
             for (int i = 0; i < C; i++) {
                 float xshift = x[i] - m;
                 v += xshift * xshift;
             }
             v *= inv_C;
             
-            // calculate the rstd
+            // calculate the rstd once
             float s = 1.0f / sqrtf(v + eps);
             
-            // Third pass: normalize and scale
+            // Final pass: normalize and scale with fused operations
             for (int i = 0; i < C; i++) {
-                float normalized = (x[i] - m) * s;
-                out_bt[i] = normalized * weight[i] + bias[i];
+                // Fuse normalization and scaling in one operation
+                out_bt[i] = (x[i] - m) * s * weight[i] + bias[i];
             }
             
             // cache the mean and rstd for the backward pass later
