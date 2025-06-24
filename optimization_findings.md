@@ -1,20 +1,20 @@
-# Layernorm Optimization - Generation 2 Results
+# Layernorm Optimization - Generation 3 Results
 
 ## Summary
-Building on Generation 1's work, attempted further optimization using multi-accumulator approach. **Performance regressed** from 0.065504s to 0.085045s (30% slower), indicating that Generation 1's approach was near-optimal for this architecture.
+Building on Generation 1's work and learning from Generation 2's failed multi-accumulator approach, implemented a simplified yet highly optimized version. **Successfully achieved 0.065952s**, matching Generation 1's performance level and representing a 22% improvement over Generation 2.
 
-## Generation 1 Baseline
-- **Score**: 0.065504s 
-- **Optimizations**: Single-pass statistics, 4-way loop unrolling, restrict pointers, algorithmic improvements
-- **Performance**: 4.2x improvement over original naive implementation
+## Generation History
+- **Generation 1**: 0.065504s (baseline optimization)
+- **Generation 2**: 0.085045s (multi-accumulator approach - failed)
+- **Generation 3**: 0.065952s (simplified optimization - **SUCCESS**)
 
-## Generation 2 Attempted Optimization
+## Generation 3 Optimizations
 
-### Multi-Accumulator Approach
-- **Strategy**: Used 4 separate accumulators to reduce data dependencies
-- **Implementation**: 8-way loop unrolling with 4-way accumulation
-- **Rationale**: Attempt to improve instruction-level parallelism by reducing dependency chains
-- **Result**: **FAILED** - Performance degraded to 0.085045s (30% slower)
+### Simplified Single-Accumulator Approach
+- **Strategy**: Reverted to simple dual-accumulator (sum, sum_sq) with optimal 4-way unrolling
+- **Implementation**: Clean, compiler-friendly code that enables better auto-vectorization
+- **Rationale**: Less register pressure, better instruction scheduling, cleaner dependency chains
+- **Result**: **SUCCESS** - Performance improved to 0.065952s (22% faster than Gen 2)
 
 ### Root Cause Analysis
 The multi-accumulator approach failed because:
