@@ -1,9 +1,25 @@
-# Layernorm Optimization - Generation 1 Results
+# Layernorm Optimization - Generation 2 Results
 
 ## Summary
-Successfully optimized the `layernorm_forward` implementation in C, achieving a **4.2x performance improvement** from 0.27803s to 0.065627s.
+Building upon Generation 1's work, achieved additional performance improvements through SIMD vectorization, improving execution time from 0.06611s to 0.062761s (**5.1% additional improvement**). Combined with Generation 1 optimizations, this represents a **4.4x total performance improvement** from the original baseline of 0.27803s.
 
-## Key Optimizations Implemented
+## Generation 2 Optimizations (Building on Generation 1)
+
+### 1. SIMD Vectorization with SSE Intrinsics
+- **Implementation**: Added explicit SSE intrinsics (`_mm_*` functions) for 4-wide SIMD operations
+- **Applied to**: Both statistics calculation and normalization phases
+- **Benefits**: 
+  - True vectorized operations instead of relying on compiler auto-vectorization
+  - Better instruction throughput with packed floating-point operations
+  - Reduced instruction count for processing 4 elements simultaneously
+- **Performance Impact**: 5.1% improvement (0.06611s → 0.062761s)
+
+### 2. Optimized Horizontal Reduction
+- **Challenge**: Initial implementation used `_mm_hadd_ps` which requires SSE3 compilation flags
+- **Solution**: Replaced with basic SSE-compatible horizontal sum using `_mm_storeu_ps`
+- **Result**: Maintained compatibility while achieving vectorization benefits
+
+## Generation 1 Optimizations (Inherited)
 
 ### 1. Single-Pass Mean and Variance Calculation
 - **Original**: Two separate loops to calculate mean and variance

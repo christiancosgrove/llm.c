@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <immintrin.h>
 
 void layernorm_forward(float* restrict out, float* restrict mean, float* restrict rstd,
                        float* restrict inp, float* restrict weight, float* restrict bias,
@@ -14,21 +15,25 @@ void layernorm_forward(float* restrict out, float* restrict mean, float* restric
             float* restrict x = inp + b * T * C + t * C;
             float* restrict out_bt = out + b * T * C + t * C;
             
-            // Single pass: calculate mean and variance together
-            float sum = 0.0f;
-            float sum_sq = 0.0f;
+            // Single pass: calculate mean and variance together using SIMD
+            __m128 sum_vec = _mm_setzero_ps();
+            __m128 sum_sq_vec = _mm_setzero_ps();
             
-            // Unroll by 4 for better vectorization
+            // Process 4 elements at once with SSE
             int i = 0;
             for (; i < C - 3; i += 4) {
-                float x0 = x[i];
-                float x1 = x[i+1];
-                float x2 = x[i+2];
-                float x3 = x[i+3];
-                
-                sum += x0 + x1 + x2 + x3;
-                sum_sq += x0*x0 + x1*x1 + x2*x2 + x3*x3;
+                __m128 x_vec = _mm_loadu_ps(&x[i]);
+                sum_vec = _mm_add_ps(sum_vec, x_vec);
+                sum_sq_vec = _mm_add_ps(sum_sq_vec, _mm_mul_ps(x_vec, x_vec));
             }
+            
+            // Horizontal sum of vectors using shuffle and add
+            float sum_arr[4], sum_sq_arr[4];
+            _mm_storeu_ps(sum_arr, sum_vec);
+            _mm_storeu_ps(sum_sq_arr, sum_sq_vec);
+            float sum = sum_arr[0] + sum_arr[1] + sum_arr[2] + sum_arr[3];
+            float sum_sq = sum_sq_arr[0] + sum_sq_arr[1] + sum_sq_arr[2] + sum_sq_arr[3];
+            
             // Handle remaining elements
             for (; i < C; i++) {
                 float xi = x[i];
@@ -40,18 +45,23 @@ void layernorm_forward(float* restrict out, float* restrict mean, float* restric
             float v = sum_sq * inv_C - m * m;
             float s = 1.0f / sqrtf(v + eps);
             
-            // Apply normalization with unrolling
+            // Apply normalization with SIMD
+            __m128 m_vec = _mm_set1_ps(m);
+            __m128 s_vec = _mm_set1_ps(s);
+            
             i = 0;
             for (; i < C - 3; i += 4) {
-                float n0 = s * (x[i] - m);
-                float n1 = s * (x[i+1] - m);
-                float n2 = s * (x[i+2] - m);
-                float n3 = s * (x[i+3] - m);
+                __m128 x_vec = _mm_loadu_ps(&x[i]);
+                __m128 weight_vec = _mm_loadu_ps(&weight[i]);
+                __m128 bias_vec = _mm_loadu_ps(&bias[i]);
                 
-                out_bt[i] = n0 * weight[i] + bias[i];
-                out_bt[i+1] = n1 * weight[i+1] + bias[i+1];
-                out_bt[i+2] = n2 * weight[i+2] + bias[i+2];
-                out_bt[i+3] = n3 * weight[i+3] + bias[i+3];
+                // Normalize: s * (x - m)
+                __m128 norm_vec = _mm_mul_ps(s_vec, _mm_sub_ps(x_vec, m_vec));
+                
+                // Apply weight and bias: norm * weight + bias
+                __m128 result = _mm_add_ps(_mm_mul_ps(norm_vec, weight_vec), bias_vec);
+                
+                _mm_storeu_ps(&out_bt[i], result);
             }
             // Handle remaining elements
             for (; i < C; i++) {
