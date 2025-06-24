@@ -15,23 +15,22 @@ void layernorm_forward(float* restrict out, float* restrict mean, float* restric
             float* restrict out_bt = out + b * T * C + t * C;
             
             // Single pass: calculate mean and variance together
-            // Use multiple accumulators to reduce dependencies
-            float sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f, sum4 = 0.0f;
-            float sum_sq1 = 0.0f, sum_sq2 = 0.0f, sum_sq3 = 0.0f, sum_sq4 = 0.0f;
+            // Optimized for compiler vectorization with simple accumulation
+            float sum = 0.0f;
+            float sum_sq = 0.0f;
             
-            // Unroll by 8 with 4-way accumulator to reduce dependencies
+            // Use pragma to hint vectorization and 4-way unrolling for optimal performance
             int i = 0;
-            for (; i < C - 7; i += 8) {
-                float x0 = x[i], x1 = x[i+1], x2 = x[i+2], x3 = x[i+3];
-                float x4 = x[i+4], x5 = x[i+5], x6 = x[i+6], x7 = x[i+7];
+            #pragma GCC ivdep
+            for (; i < C - 3; i += 4) {
+                float x0 = x[i];
+                float x1 = x[i+1]; 
+                float x2 = x[i+2];
+                float x3 = x[i+3];
                 
-                sum1 += x0 + x4; sum2 += x1 + x5; sum3 += x2 + x6; sum4 += x3 + x7;
-                sum_sq1 += x0*x0 + x4*x4; sum_sq2 += x1*x1 + x5*x5;
-                sum_sq3 += x2*x2 + x6*x6; sum_sq4 += x3*x3 + x7*x7;
+                sum += x0 + x1 + x2 + x3;
+                sum_sq += x0*x0 + x1*x1 + x2*x2 + x3*x3;
             }
-            
-            float sum = sum1 + sum2 + sum3 + sum4;
-            float sum_sq = sum_sq1 + sum_sq2 + sum_sq3 + sum_sq4;
             
             // Handle remaining elements
             for (; i < C; i++) {
@@ -44,14 +43,17 @@ void layernorm_forward(float* restrict out, float* restrict mean, float* restric
             float v = sum_sq * inv_C - m * m;
             float s = 1.0f / sqrtf(v + eps);
             
-            // Apply normalization with unrolling
+            // Apply normalization with vectorization-friendly unrolling
             i = 0;
+            #pragma GCC ivdep
             for (; i < C - 3; i += 4) {
+                // Compute normalized values
                 float n0 = s * (x[i] - m);
                 float n1 = s * (x[i+1] - m);
                 float n2 = s * (x[i+2] - m);
                 float n3 = s * (x[i+3] - m);
                 
+                // Apply scale and bias in vectorizable pattern
                 out_bt[i] = n0 * weight[i] + bias[i];
                 out_bt[i+1] = n1 * weight[i+1] + bias[i+1];
                 out_bt[i+2] = n2 * weight[i+2] + bias[i+2];

@@ -1,105 +1,117 @@
 diff --git a/doc/layernorm/layernorm_functions.c b/doc/layernorm/layernorm_functions.c
-index 6a09c10..24ebca3 100644
+index 24ebca3..ef1e66a 100644
 --- a/doc/layernorm/layernorm_functions.c
 +++ b/doc/layernorm/layernorm_functions.c
-@@ -15,20 +15,24 @@ void layernorm_forward(float* restrict out, float* restrict mean, float* restric
+@@ -15,24 +15,23 @@ void layernorm_forward(float* restrict out, float* restrict mean, float* restric
              float* restrict out_bt = out + b * T * C + t * C;
              
              // Single pass: calculate mean and variance together
--            float sum = 0.0f;
--            float sum_sq = 0.0f;
-+            // Use multiple accumulators to reduce dependencies
-+            float sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f, sum4 = 0.0f;
-+            float sum_sq1 = 0.0f, sum_sq2 = 0.0f, sum_sq3 = 0.0f, sum_sq4 = 0.0f;
+-            // Use multiple accumulators to reduce dependencies
+-            float sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f, sum4 = 0.0f;
+-            float sum_sq1 = 0.0f, sum_sq2 = 0.0f, sum_sq3 = 0.0f, sum_sq4 = 0.0f;
++            // Optimized for compiler vectorization with simple accumulation
++            float sum = 0.0f;
++            float sum_sq = 0.0f;
              
--            // Unroll by 4 for better vectorization
-+            // Unroll by 8 with 4-way accumulator to reduce dependencies
+-            // Unroll by 8 with 4-way accumulator to reduce dependencies
++            // Use pragma to hint vectorization and 4-way unrolling for optimal performance
              int i = 0;
--            for (; i < C - 3; i += 4) {
--                float x0 = x[i];
--                float x1 = x[i+1];
--                float x2 = x[i+2];
--                float x3 = x[i+3];
-+            for (; i < C - 7; i += 8) {
-+                float x0 = x[i], x1 = x[i+1], x2 = x[i+2], x3 = x[i+3];
-+                float x4 = x[i+4], x5 = x[i+5], x6 = x[i+6], x7 = x[i+7];
+-            for (; i < C - 7; i += 8) {
+-                float x0 = x[i], x1 = x[i+1], x2 = x[i+2], x3 = x[i+3];
+-                float x4 = x[i+4], x5 = x[i+5], x6 = x[i+6], x7 = x[i+7];
++            #pragma GCC ivdep
++            for (; i < C - 3; i += 4) {
++                float x0 = x[i];
++                float x1 = x[i+1]; 
++                float x2 = x[i+2];
++                float x3 = x[i+3];
                  
--                sum += x0 + x1 + x2 + x3;
--                sum_sq += x0*x0 + x1*x1 + x2*x2 + x3*x3;
-+                sum1 += x0 + x4; sum2 += x1 + x5; sum3 += x2 + x6; sum4 += x3 + x7;
-+                sum_sq1 += x0*x0 + x4*x4; sum_sq2 += x1*x1 + x5*x5;
-+                sum_sq3 += x2*x2 + x6*x6; sum_sq4 += x3*x3 + x7*x7;
+-                sum1 += x0 + x4; sum2 += x1 + x5; sum3 += x2 + x6; sum4 += x3 + x7;
+-                sum_sq1 += x0*x0 + x4*x4; sum_sq2 += x1*x1 + x5*x5;
+-                sum_sq3 += x2*x2 + x6*x6; sum_sq4 += x3*x3 + x7*x7;
++                sum += x0 + x1 + x2 + x3;
++                sum_sq += x0*x0 + x1*x1 + x2*x2 + x3*x3;
              }
-+            
-+            float sum = sum1 + sum2 + sum3 + sum4;
-+            float sum_sq = sum_sq1 + sum_sq2 + sum_sq3 + sum_sq4;
-+            
+             
+-            float sum = sum1 + sum2 + sum3 + sum4;
+-            float sum_sq = sum_sq1 + sum_sq2 + sum_sq3 + sum_sq4;
+-            
              // Handle remaining elements
              for (; i < C; i++) {
                  float xi = x[i];
+@@ -44,14 +43,17 @@ void layernorm_forward(float* restrict out, float* restrict mean, float* restric
+             float v = sum_sq * inv_C - m * m;
+             float s = 1.0f / sqrtf(v + eps);
+             
+-            // Apply normalization with unrolling
++            // Apply normalization with vectorization-friendly unrolling
+             i = 0;
++            #pragma GCC ivdep
+             for (; i < C - 3; i += 4) {
++                // Compute normalized values
+                 float n0 = s * (x[i] - m);
+                 float n1 = s * (x[i+1] - m);
+                 float n2 = s * (x[i+2] - m);
+                 float n3 = s * (x[i+3] - m);
+                 
++                // Apply scale and bias in vectorizable pattern
+                 out_bt[i] = n0 * weight[i] + bias[i];
+                 out_bt[i+1] = n1 * weight[i+1] + bias[i+1];
+                 out_bt[i+2] = n2 * weight[i+2] + bias[i+2];
 diff --git a/optimization_findings.md b/optimization_findings.md
-index ff8ff9a..aaa63cd 100644
+index aaa63cd..7686c2f 100644
 --- a/optimization_findings.md
 +++ b/optimization_findings.md
-@@ -1,7 +1,49 @@
--# Layernorm Optimization - Generation 1 Results
-+# Layernorm Optimization - Generation 2 Results
+@@ -1,16 +1,35 @@
+-# Layernorm Optimization - Generation 2 Results
++# Layernorm Optimization - Generation 3 Results
  
  ## Summary
--Successfully optimized the `layernorm_forward` implementation in C, achieving a **4.2x performance improvement** from 0.27803s to 0.065627s.
-+Building on Generation 1's work, attempted further optimization using multi-accumulator approach. **Performance regressed** from 0.065504s to 0.085045s (30% slower), indicating that Generation 1's approach was near-optimal for this architecture.
+-Building on Generation 1's work, attempted further optimization using multi-accumulator approach. **Performance regressed** from 0.065504s to 0.085045s (30% slower), indicating that Generation 1's approach was near-optimal for this architecture.
++Building on previous generations' work, **successfully recovered and improved performance** to 0.065497s, achieving near-optimal results by simplifying the multi-accumulator approach and adding compiler vectorization hints.
 +
-+## Generation 1 Baseline
-+- **Score**: 0.065504s 
-+- **Optimizations**: Single-pass statistics, 4-way loop unrolling, restrict pointers, algorithmic improvements
-+- **Performance**: 4.2x improvement over original naive implementation
-+
-+## Generation 2 Attempted Optimization
-+
-+### Multi-Accumulator Approach
-+- **Strategy**: Used 4 separate accumulators to reduce data dependencies
-+- **Implementation**: 8-way loop unrolling with 4-way accumulation
-+- **Rationale**: Attempt to improve instruction-level parallelism by reducing dependency chains
-+- **Result**: **FAILED** - Performance degraded to 0.085045s (30% slower)
-+
-+### Root Cause Analysis
-+The multi-accumulator approach failed because:
-+1. **Register Pressure**: 8 accumulator variables (4 for sum, 4 for sum_sq) exceeded optimal register usage
-+2. **Cache Locality**: Increased memory access pattern complexity 
-+3. **Compiler Optimization Interference**: Manual unrolling may have interfered with compiler's auto-vectorization
-+4. **Architecture Mismatch**: The approach may work better on architectures with more registers
-+
-+## Key Learnings for Future Generations
-+
-+### What Works (from Gen 1)
-+- Single-pass algorithm with mathematical optimization
-+- Moderate loop unrolling (4x)
-+- Restrict pointer qualifiers
-+- Simple, clean code that allows compiler optimizations
-+
-+### What Doesn't Work (from Gen 2)
-+- Excessive manual unrolling (8x)
-+- Multiple accumulator variables
-+- Over-engineering register allocation
-+
-+### Recommended Next Steps
-+1. **SIMD with proper compiler flags**: Implement AVX/SSE with `-mavx2` compilation flags
-+2. **Cache blocking**: For very large C dimensions, implement cache-friendly blocking
-+3. **Profile-guided optimization**: Use PGO to let compiler optimize based on actual usage patterns
-+4. **Assembly optimization**: Hand-written assembly for critical inner loops
-+
-+## Conclusion
-+Generation 1's optimization appears to have found a sweet spot for this problem size and architecture. The 4.2x speedup achieved through algorithmic improvements and moderate loop unrolling represents an excellent balance between manual optimization and compiler-friendly code. More aggressive manual optimizations can actually hurt performance by interfering with modern compiler optimizations.
++## Performance Progression
++- **Generation 1**: 0.065504s (baseline optimization)
++- **Generation 2**: 0.085045s (multi-accumulator regression)  
++- **Generation 3**: 0.065497s (**23% improvement over Gen 2**, matching Gen 1 performance)
  
- ## Key Optimizations Implemented
+ ## Generation 1 Baseline
+ - **Score**: 0.065504s 
+ - **Optimizations**: Single-pass statistics, 4-way loop unrolling, restrict pointers, algorithmic improvements
+ - **Performance**: 4.2x improvement over original naive implementation
  
+-## Generation 2 Attempted Optimization
++## Generation 3 Successful Optimization
++
++### Compiler-Friendly Vectorization Approach
++- **Strategy**: Simplified accumulation with compiler vectorization hints
++- **Implementation**: 4-way loop unrolling with `#pragma GCC ivdep` directives
++- **Rationale**: Let compiler handle vectorization while providing optimal loop structure
++- **Result**: **SUCCESS** - Performance improved to 0.065497s (23% faster than Gen 2)
++
++### Key Changes from Generation 2
++1. **Removed Multi-Accumulator Complexity**: Simplified back to single sum/sum_sq accumulators
++2. **Added Vectorization Hints**: Used `#pragma GCC ivdep` to help compiler optimize
++3. **Maintained 4-way Unrolling**: Kept optimal unrolling factor from Generation 1
++4. **Preserved Memory Access Pattern**: Maintained efficient single-pass algorithm
++
++## Generation 2 Failed Optimization
+ 
+-### Multi-Accumulator Approach
++### Multi-Accumulator Approach (FAILED)
+ - **Strategy**: Used 4 separate accumulators to reduce data dependencies
+ - **Implementation**: 8-way loop unrolling with 4-way accumulation
+ - **Rationale**: Attempt to improve instruction-level parallelism by reducing dependency chains
 diff --git a/optimization_results.json b/optimization_results.json
-index eb5c998..02d9cc6 100644
+index 02d9cc6..a7e3893 100644
 --- a/optimization_results.json
 +++ b/optimization_results.json
 @@ -1,3 +1,3 @@
  {
--  "score": 0.065627
-+  "score": 0.085045
+-  "score": 0.085045
++  "score": 0.065497
  }
 \ No newline at end of file
+diff --git a/time_layernorm.py b/time_layernorm.py
+old mode 100644
+new mode 100755
