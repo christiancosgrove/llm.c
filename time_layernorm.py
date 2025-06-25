@@ -153,7 +153,7 @@ int main() {
     
     # Build timing program, linking with the layernorm functions
     layernorm_functions_path = os.path.join(layernorm_dir, 'layernorm_functions.c')
-    build_cmd = ['gcc', timing_c_path, layernorm_functions_path, '-o', timing_exe_path, '-lm', '-O3']
+    build_cmd = ['gcc', timing_c_path, layernorm_functions_path, '-o', timing_exe_path, '-lm', '-O3', '-mavx', '-mavx2', '-mfma']
     result = subprocess.run(build_cmd, capture_output=True, text=True, cwd=layernorm_dir)
     if result.returncode != 0:
         print(f"Timing build failed: {result.stderr}")

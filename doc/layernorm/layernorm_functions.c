@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <immintrin.h>
 
 void layernorm_forward(float* out, float* mean, float* rstd,
                        float* inp, float* weight, float* bias,
@@ -13,22 +14,34 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             // seek to the input position inp[b,t,:]
             float* x = inp + b * T * C + t * C;
             
-            // Single pass for mean and variance calculation
-            float sum = 0.0f;
-            float sum_sq = 0.0f;
+            // Single pass for mean and variance calculation using AVX
+            __m256 sum_vec = _mm256_setzero_ps();
+            __m256 sum_sq_vec = _mm256_setzero_ps();
             
-            // Optimized loop with manual unrolling for better vectorization
             int i = 0;
+            // Process 8 elements at a time with AVX
+            for (; i <= C - 8; i += 8) {
+                __m256 x_vec = _mm256_loadu_ps(&x[i]);
+                sum_vec = _mm256_add_ps(sum_vec, x_vec);
+                sum_sq_vec = _mm256_fmadd_ps(x_vec, x_vec, sum_sq_vec);
+            }
+            
+            // Horizontal reduction of AVX vectors
+            float sum_array[8], sum_sq_array[8];
+            _mm256_storeu_ps(sum_array, sum_vec);
+            _mm256_storeu_ps(sum_sq_array, sum_sq_vec);
+            
+            float sum = sum_array[0] + sum_array[1] + sum_array[2] + sum_array[3] +
+                       sum_array[4] + sum_array[5] + sum_array[6] + sum_array[7];
+            float sum_sq = sum_sq_array[0] + sum_sq_array[1] + sum_sq_array[2] + sum_sq_array[3] +
+                          sum_sq_array[4] + sum_sq_array[5] + sum_sq_array[6] + sum_sq_array[7];
+            
+            // Handle remaining elements with unrolling
             for (; i < C - 3; i += 4) {
-                float x0 = x[i];
-                float x1 = x[i+1];
-                float x2 = x[i+2];
-                float x3 = x[i+3];
-                
+                float x0 = x[i], x1 = x[i+1], x2 = x[i+2], x3 = x[i+3];
                 sum += x0 + x1 + x2 + x3;
                 sum_sq += x0*x0 + x1*x1 + x2*x2 + x3*x3;
             }
-            // Handle remaining elements
             for (; i < C; i++) {
                 float xi = x[i];
                 sum += xi;
@@ -46,8 +59,26 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             // seek to the output position in out[b,t,:]
             float* out_bt = out + b * T * C + t * C;
             
-            // Optimized output calculation with unrolling
+            // Optimized output calculation with AVX
+            __m256 m_vec = _mm256_set1_ps(m);
+            __m256 s_vec = _mm256_set1_ps(s);
+            
             i = 0;
+            for (; i <= C - 8; i += 8) {
+                __m256 x_vec = _mm256_loadu_ps(&x[i]);
+                __m256 weight_vec = _mm256_loadu_ps(&weight[i]);
+                __m256 bias_vec = _mm256_loadu_ps(&bias[i]);
+                
+                // Compute normalized values: s * (x - m)
+                __m256 norm_vec = _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec, m_vec));
+                
+                // Apply weight and bias: norm * weight + bias
+                __m256 result = _mm256_fmadd_ps(norm_vec, weight_vec, bias_vec);
+                
+                _mm256_storeu_ps(&out_bt[i], result);
+            }
+            
+            // Handle remaining elements with unrolling
             for (; i < C - 3; i += 4) {
                 float n0 = s * (x[i] - m);
                 float n1 = s * (x[i+1] - m);
@@ -59,7 +90,6 @@ void layernorm_forward(float* out, float* mean, float* rstd,
                 out_bt[i+2] = n2 * weight[i+2] + bias[i+2];
                 out_bt[i+3] = n3 * weight[i+3] + bias[i+3];
             }
-            // Handle remaining elements
             for (; i < C; i++) {
                 float n = s * (x[i] - m);
                 out_bt[i] = n * weight[i] + bias[i];
