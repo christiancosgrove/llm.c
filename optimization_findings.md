@@ -1,6 +1,91 @@
-# LayerNorm Optimization - Generation 4 Results
+# LayerNorm Optimization - Generation 5 Results
 
-## Generation 4 Key Optimizations Implemented
+## Generation 5 Key Optimizations Implemented
+
+### 1. Enhanced 32-Element Unrolling with 4-Way Parallelism
+- **Technique**: Upgraded from 16-element to 32-element processing with 4 parallel AVX vectors
+- **Implementation**: 
+  - Use 4 independent sum vectors (`sum_vec1-4`) and 4 sum-of-squares vectors (`sum_sq_vec1-4`)
+  - Process 32 elements per iteration (4 x 8-element AVX operations)
+  - Efficient vector combination using nested `_mm256_add_ps` operations
+- **Benefit**: Maximized instruction-level parallelism and reduced loop overhead by 50%
+
+### 2. Simplified Horizontal Reduction Strategy
+- **Technique**: Replaced complex hadd-based reduction with direct array extraction
+- **Implementation**: 
+  - Store AVX vectors to float arrays using `_mm256_storeu_ps`
+  - Manual summation of 8 elements with explicit loop unrolling
+  - Eliminated multiple extract and hadd operations
+- **Benefit**: Reduced instruction count and improved pipeline efficiency
+
+### 3. Eliminated Excessive Prefetching
+- **Technique**: Removed all prefetch instructions that were causing cache pollution
+- **Implementation**: 
+  - Removed `_mm_prefetch` calls from both statistics and output computation phases
+  - Rely on hardware prefetching and natural cache line utilization
+  - Focus on computational efficiency over speculative memory access
+- **Benefit**: Reduced memory system overhead and improved cache locality
+
+### 4. Enhanced Output Computation Vectorization
+- **Technique**: Extended 32-element unrolling to output computation phase
+- **Implementation**: 
+  - Process 4 x 8-element chunks simultaneously in output loop
+  - Parallel loading of input, weight, and bias vectors
+  - Independent computation of 4 normalization results per iteration
+- **Benefit**: Improved memory bandwidth utilization and computational throughput
+
+## Performance Results
+
+- **Generation 4 Score**: 0.035201 seconds (parent branch baseline)
+- **Generation 5 Score**: 0.030068 seconds
+- **Generation 5 Improvement**: 1.17x speedup (14.6% reduction from Gen 4)
+- **Total Improvement**: 9.25x speedup from original baseline (0.27803s → 0.030068s)
+- **C vs Python**: 17.8x speedup compared to reference Python implementation
+
+## Generation 5 Technical Analysis
+
+### 32-Element Unrolling Impact
+- **Wider Processing**: Process 32 float32 values per loop iteration
+- **Maximum ILP**: 4-way parallel vector operations maximize CPU execution units
+- **Reduced Branch Overhead**: Fewer loop iterations with significantly more work per iteration
+- **Better Cache Utilization**: More efficient use of loaded cache lines
+
+### Horizontal Reduction Optimization
+- **Simplified Pipeline**: Direct array access eliminates complex shuffle operations
+- **Reduced Latency**: Fewer dependent instructions in reduction path
+- **Better Predictability**: Compiler can optimize simple addition chains more effectively
+- **Memory Efficiency**: Single store/load cycle instead of multiple extracts
+
+### Memory System Improvements
+- **Cache Efficiency**: Removed speculative prefetching that was missing cache lines
+- **Natural Prefetching**: Hardware prefetcher handles sequential access patterns optimally
+- **Reduced Pollution**: Eliminated unnecessary cache line evictions from over-prefetching
+- **Memory Bandwidth**: Better utilization with wider vectorized loads/stores
+
+## Building Upon Previous Generations
+
+### From Generation 4
+- **Retained**: Dual-vector SIMD approach and efficient compiler optimizations
+- **Enhanced**: Extended from 16-element to 32-element unrolling for better ILP
+- **Simplified**: Replaced complex reduction with straightforward array-based approach
+- **Cleaned**: Removed prefetching overhead that was degrading performance
+
+### Key Insights from Generation 5
+1. **More Parallelism**: 4-way vector parallelism provides better CPU utilization than 2-way
+2. **Simpler is Better**: Complex horizontal operations can be slower than simple alternatives
+3. **Trust Hardware**: Modern CPUs handle prefetching better than manual speculation
+4. **Balanced Approach**: Optimize for both computation and memory access patterns
+
+## Previous Generation Analysis Summary
+
+### Generation 4 (Parent Branch)
+- Built upon Generation 3's optimizations with dual-vector processing
+- Score: 0.035201 seconds
+- Implemented 16-element unrolling and advanced SIMD techniques
+
+### Generation 3 Results
+- Score: 0.042047 seconds
+- Focused on AVX optimizations and prefetching strategies
 
 ### 1. Dual-Vector AVX Processing with 16-Element Unrolling
 - **Technique**: Process 16 elements per iteration using two parallel AVX vectors

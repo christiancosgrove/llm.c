@@ -14,54 +14,55 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             // seek to the input position inp[b,t,:]
             float* x = inp + b * T * C + t * C;
             
-            // Prefetch next cache line for better memory access
-            if (C > 64) {
-                _mm_prefetch((const char*)(x + 64), _MM_HINT_T0);
-            }
-            
-            // Dual-pass approach with 16-element unrolling for better ILP
+            // Optimized 32-element unrolling with 4-way parallelism for maximum ILP
             __m256 sum_vec1 = _mm256_setzero_ps();
             __m256 sum_vec2 = _mm256_setzero_ps();
+            __m256 sum_vec3 = _mm256_setzero_ps();
+            __m256 sum_vec4 = _mm256_setzero_ps();
             __m256 sum_sq_vec1 = _mm256_setzero_ps();
             __m256 sum_sq_vec2 = _mm256_setzero_ps();
+            __m256 sum_sq_vec3 = _mm256_setzero_ps();
+            __m256 sum_sq_vec4 = _mm256_setzero_ps();
             
             int i = 0;
-            // Process 16 elements at a time with dual AVX vectors
-            for (; i <= C - 16; i += 16) {
+            // Process 32 elements at a time with 4-way AVX parallelism
+            for (; i <= C - 32; i += 32) {
                 __m256 x_vec1 = _mm256_loadu_ps(&x[i]);
                 __m256 x_vec2 = _mm256_loadu_ps(&x[i + 8]);
+                __m256 x_vec3 = _mm256_loadu_ps(&x[i + 16]);
+                __m256 x_vec4 = _mm256_loadu_ps(&x[i + 24]);
                 
                 sum_vec1 = _mm256_add_ps(sum_vec1, x_vec1);
                 sum_vec2 = _mm256_add_ps(sum_vec2, x_vec2);
+                sum_vec3 = _mm256_add_ps(sum_vec3, x_vec3);
+                sum_vec4 = _mm256_add_ps(sum_vec4, x_vec4);
+                
                 sum_sq_vec1 = _mm256_fmadd_ps(x_vec1, x_vec1, sum_sq_vec1);
                 sum_sq_vec2 = _mm256_fmadd_ps(x_vec2, x_vec2, sum_sq_vec2);
+                sum_sq_vec3 = _mm256_fmadd_ps(x_vec3, x_vec3, sum_sq_vec3);
+                sum_sq_vec4 = _mm256_fmadd_ps(x_vec4, x_vec4, sum_sq_vec4);
             }
             
-            // Combine the dual vectors
-            sum_vec1 = _mm256_add_ps(sum_vec1, sum_vec2);
-            sum_sq_vec1 = _mm256_add_ps(sum_sq_vec1, sum_sq_vec2);
+            // Combine the 4 vectors efficiently
+            sum_vec1 = _mm256_add_ps(_mm256_add_ps(sum_vec1, sum_vec2), _mm256_add_ps(sum_vec3, sum_vec4));
+            sum_sq_vec1 = _mm256_add_ps(_mm256_add_ps(sum_sq_vec1, sum_sq_vec2), _mm256_add_ps(sum_sq_vec3, sum_sq_vec4));
             
-            // Process remaining 8 elements
+            // Process remaining 8-element chunks
             for (; i <= C - 8; i += 8) {
                 __m256 x_vec = _mm256_loadu_ps(&x[i]);
                 sum_vec1 = _mm256_add_ps(sum_vec1, x_vec);
                 sum_sq_vec1 = _mm256_fmadd_ps(x_vec, x_vec, sum_sq_vec1);
             }
             
-            // Fast horizontal reduction
-            __m128 sum_hi = _mm256_extractf128_ps(sum_vec1, 1);
-            __m128 sum_lo = _mm256_extractf128_ps(sum_vec1, 0);
-            sum_lo = _mm_add_ps(sum_lo, sum_hi);
-            sum_lo = _mm_hadd_ps(sum_lo, sum_lo);
-            sum_lo = _mm_hadd_ps(sum_lo, sum_lo);
-            float sum = _mm_cvtss_f32(sum_lo);
+            // Optimized horizontal reduction using manual element extraction
+            float sum_array[8], sum_sq_array[8];
+            _mm256_storeu_ps(sum_array, sum_vec1);
+            _mm256_storeu_ps(sum_sq_array, sum_sq_vec1);
             
-            __m128 sum_sq_hi = _mm256_extractf128_ps(sum_sq_vec1, 1);
-            __m128 sum_sq_lo = _mm256_extractf128_ps(sum_sq_vec1, 0);
-            sum_sq_lo = _mm_add_ps(sum_sq_lo, sum_sq_hi);
-            sum_sq_lo = _mm_hadd_ps(sum_sq_lo, sum_sq_lo);
-            sum_sq_lo = _mm_hadd_ps(sum_sq_lo, sum_sq_lo);
-            float sum_sq = _mm_cvtss_f32(sum_sq_lo);
+            float sum = sum_array[0] + sum_array[1] + sum_array[2] + sum_array[3] + 
+                       sum_array[4] + sum_array[5] + sum_array[6] + sum_array[7];
+            float sum_sq = sum_sq_array[0] + sum_sq_array[1] + sum_sq_array[2] + sum_sq_array[3] + 
+                          sum_sq_array[4] + sum_sq_array[5] + sum_sq_array[6] + sum_sq_array[7];
             
             // Handle remaining elements
             for (; i < C; i++) {
@@ -81,24 +82,48 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             // seek to the output position in out[b,t,:]
             float* out_bt = out + b * T * C + t * C;
             
-            // Optimized output calculation with AVX and prefetching
+            // Optimized output calculation with 32-element unrolling
             __m256 m_vec = _mm256_set1_ps(m);
             __m256 s_vec = _mm256_set1_ps(s);
             
-            // Prefetch weight and bias data
-            if (C > 64) {
-                _mm_prefetch((const char*)(weight + 64), _MM_HINT_T0);
-                _mm_prefetch((const char*)(bias + 64), _MM_HINT_T0);
+            i = 0;
+            // Process 32 elements at a time for better throughput
+            for (; i <= C - 32; i += 32) {
+                __m256 x_vec1 = _mm256_loadu_ps(&x[i]);
+                __m256 x_vec2 = _mm256_loadu_ps(&x[i + 8]);
+                __m256 x_vec3 = _mm256_loadu_ps(&x[i + 16]);
+                __m256 x_vec4 = _mm256_loadu_ps(&x[i + 24]);
+                
+                __m256 weight_vec1 = _mm256_loadu_ps(&weight[i]);
+                __m256 weight_vec2 = _mm256_loadu_ps(&weight[i + 8]);
+                __m256 weight_vec3 = _mm256_loadu_ps(&weight[i + 16]);
+                __m256 weight_vec4 = _mm256_loadu_ps(&weight[i + 24]);
+                
+                __m256 bias_vec1 = _mm256_loadu_ps(&bias[i]);
+                __m256 bias_vec2 = _mm256_loadu_ps(&bias[i + 8]);
+                __m256 bias_vec3 = _mm256_loadu_ps(&bias[i + 16]);
+                __m256 bias_vec4 = _mm256_loadu_ps(&bias[i + 24]);
+                
+                // Compute normalized values: s * (x - m)
+                __m256 norm_vec1 = _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec1, m_vec));
+                __m256 norm_vec2 = _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec2, m_vec));
+                __m256 norm_vec3 = _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec3, m_vec));
+                __m256 norm_vec4 = _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec4, m_vec));
+                
+                // Apply weight and bias: norm * weight + bias
+                __m256 result1 = _mm256_fmadd_ps(norm_vec1, weight_vec1, bias_vec1);
+                __m256 result2 = _mm256_fmadd_ps(norm_vec2, weight_vec2, bias_vec2);
+                __m256 result3 = _mm256_fmadd_ps(norm_vec3, weight_vec3, bias_vec3);
+                __m256 result4 = _mm256_fmadd_ps(norm_vec4, weight_vec4, bias_vec4);
+                
+                _mm256_storeu_ps(&out_bt[i], result1);
+                _mm256_storeu_ps(&out_bt[i + 8], result2);
+                _mm256_storeu_ps(&out_bt[i + 16], result3);
+                _mm256_storeu_ps(&out_bt[i + 24], result4);
             }
             
-            i = 0;
+            // Process remaining 8-element chunks
             for (; i <= C - 8; i += 8) {
-                // Prefetch ahead for large tensors
-                if (i + 64 < C) {
-                    _mm_prefetch((const char*)(weight + i + 64), _MM_HINT_T0);
-                    _mm_prefetch((const char*)(bias + i + 64), _MM_HINT_T0);
-                }
-                
                 __m256 x_vec = _mm256_loadu_ps(&x[i]);
                 __m256 weight_vec = _mm256_loadu_ps(&weight[i]);
                 __m256 bias_vec = _mm256_loadu_ps(&bias[i]);
