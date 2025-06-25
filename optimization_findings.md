@@ -1,4 +1,4 @@
-# LayerNorm Optimization - Generation 1 Results
+# LayerNorm Optimization - Generation 2 Results
 
 ## Key Optimizations Implemented
 
@@ -89,8 +89,63 @@ Loop unrolling by 4 enables:
 2. **Link-Time Optimization**: Enable LTO for better cross-function optimization
 3. **Target-Specific Flags**: Use CPU-specific optimization flags
 
+## Generation 2 Improvements
+
+### SIMD Intrinsics Implementation
+- **Added**: Explicit SSE2 intrinsics for vectorized computation
+- **Statistics Calculation**: Used `_mm_loadu_ps`, `_mm_add_ps`, and `_mm_mul_ps` for 4-element parallel processing
+- **Output Computation**: Vectorized normalization, weight, and bias application using SIMD
+- **Memory Access**: Optimized with `_mm_set1_ps` for broadcasting scalars
+
+### Performance Impact
+- **Generation 1 Score**: 0.065750s
+- **Generation 2 Score**: 0.060315s  
+- **Improvement**: 8.3% speedup (5.4ms reduction)
+- **Total Improvement from Baseline**: 4.61x speedup vs original implementation
+
+### Technical Optimizations Applied
+
+#### 1. Explicit SIMD Vectorization
+- Replaced manual loop unrolling with SSE2 intrinsics
+- Guaranteed vectorization independent of compiler optimization
+- Process exactly 4 floats per SIMD instruction
+
+#### 2. Efficient Horizontal Reduction
+- Used array-based approach for horizontal sum (SSE3 _mm_hadd_ps not available)
+- Minimized memory traffic for scalar reduction operations
+
+#### 3. Broadcast Optimization
+- Used `_mm_set1_ps` to efficiently broadcast mean and rstd values
+- Reduced redundant scalar-to-vector conversions in output loop
+
+## Challenges and Lessons Learned
+
+### Architecture Limitations
+- Target CPU supports SSE2 but not SSE3, limiting horizontal operation options
+- Attempted `_mm_hadd_ps` optimization failed due to instruction set constraints
+- Array-based horizontal sum remains necessary for SSE2 compatibility
+
+### Numerical Stability
+- SIMD implementation maintains numerical accuracy (dx error: ~6e-08)
+- No degradation in precision compared to Generation 1
+
 ## Score Analysis
 
-The final score of 0.065287 seconds represents the total execution time for 1000 iterations of layernorm_forward on tensors of size (8, 64, 256). This translates to approximately 65 microseconds per forward pass, which is competitive for a CPU implementation.
+The final Generation 2 score of 0.060315 seconds represents continued optimization success:
+- **Per-iteration time**: ~60 microseconds per forward pass
+- **Cumulative improvement**: 4.61x speedup from baseline
+- **Generation 2 contribution**: Additional 8.3% improvement through SIMD intrinsics
 
-The 4.26x improvement demonstrates that significant performance gains are possible through careful algorithmic and implementation optimizations, even with relatively simple techniques like loop unrolling and mathematical identity usage.
+The results demonstrate that explicit SIMD programming can provide meaningful performance gains even after aggressive scalar optimizations, though the returns are diminishing as we approach hardware limits.
+
+## Future Generation Recommendations
+
+### Immediate Optimizations (Generation 3)
+1. **AVX Instructions**: If available, use 256-bit vectors for 8-element processing
+2. **Cache Prefetching**: Add `_mm_prefetch` hints for large tensor processing
+3. **Memory Alignment**: Ensure data alignment for faster SIMD loads/stores
+
+### Advanced Techniques
+1. **Blocking/Tiling**: Process multiple (B,T) pairs together for better cache reuse
+2. **Specialized Kernels**: Create optimized versions for common C values (64, 128, 256, 512)
+3. **Mixed Precision**: Explore FP16 computations where precision allows

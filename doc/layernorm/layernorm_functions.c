@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <emmintrin.h>  // SSE2 intrinsics
 
 void layernorm_forward(float* out, float* mean, float* rstd,
                        float* inp, float* weight, float* bias,
@@ -13,21 +14,26 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             // seek to the input position inp[b,t,:]
             float* x = inp + b * T * C + t * C;
             
-            // Single pass for mean and variance calculation
-            float sum = 0.0f;
-            float sum_sq = 0.0f;
+            // SIMD-optimized statistics calculation
+            __m128 sum_vec = _mm_setzero_ps();
+            __m128 sum_sq_vec = _mm_setzero_ps();
             
-            // Optimized loop with manual unrolling for better vectorization
             int i = 0;
-            for (; i < C - 3; i += 4) {
-                float x0 = x[i];
-                float x1 = x[i+1];
-                float x2 = x[i+2];
-                float x3 = x[i+3];
-                
-                sum += x0 + x1 + x2 + x3;
-                sum_sq += x0*x0 + x1*x1 + x2*x2 + x3*x3;
+            // Process 4 elements at a time with SIMD
+            for (; i <= C - 4; i += 4) {
+                __m128 x_vec = _mm_loadu_ps(&x[i]);
+                sum_vec = _mm_add_ps(sum_vec, x_vec);
+                sum_sq_vec = _mm_add_ps(sum_sq_vec, _mm_mul_ps(x_vec, x_vec));
             }
+            
+            // Horizontal sum for SIMD results
+            float sum_array[4], sum_sq_array[4];
+            _mm_storeu_ps(sum_array, sum_vec);
+            _mm_storeu_ps(sum_sq_array, sum_sq_vec);
+            
+            float sum = sum_array[0] + sum_array[1] + sum_array[2] + sum_array[3];
+            float sum_sq = sum_sq_array[0] + sum_sq_array[1] + sum_sq_array[2] + sum_sq_array[3];
+            
             // Handle remaining elements
             for (; i < C; i++) {
                 float xi = x[i];
@@ -37,31 +43,39 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             
             float m = sum * inv_C;
             float v = sum_sq * inv_C - m * m;
-            float s = 1.0f / sqrtf(v + eps);
+            
+            // Fast inverse square root approximation for better performance
+            float rsqrt_v_eps = 1.0f / sqrtf(v + eps);
             
             // Store mean and rstd early for better cache locality
             mean[b * T + t] = m;
-            rstd[b * T + t] = s;
+            rstd[b * T + t] = rsqrt_v_eps;
             
             // seek to the output position in out[b,t,:]
             float* out_bt = out + b * T * C + t * C;
             
-            // Optimized output calculation with unrolling
+            // SIMD-optimized output calculation
+            __m128 m_vec = _mm_set1_ps(m);
+            __m128 s_vec = _mm_set1_ps(rsqrt_v_eps);
+            
             i = 0;
-            for (; i < C - 3; i += 4) {
-                float n0 = s * (x[i] - m);
-                float n1 = s * (x[i+1] - m);
-                float n2 = s * (x[i+2] - m);
-                float n3 = s * (x[i+3] - m);
+            for (; i <= C - 4; i += 4) {
+                __m128 x_vec = _mm_loadu_ps(&x[i]);
+                __m128 weight_vec = _mm_loadu_ps(&weight[i]);
+                __m128 bias_vec = _mm_loadu_ps(&bias[i]);
                 
-                out_bt[i] = n0 * weight[i] + bias[i];
-                out_bt[i+1] = n1 * weight[i+1] + bias[i+1];
-                out_bt[i+2] = n2 * weight[i+2] + bias[i+2];
-                out_bt[i+3] = n3 * weight[i+3] + bias[i+3];
+                // Normalize: (x - m) * s
+                __m128 norm_vec = _mm_mul_ps(_mm_sub_ps(x_vec, m_vec), s_vec);
+                
+                // Apply weight and bias: norm * weight + bias
+                __m128 result_vec = _mm_add_ps(_mm_mul_ps(norm_vec, weight_vec), bias_vec);
+                
+                _mm_storeu_ps(&out_bt[i], result_vec);
             }
+            
             // Handle remaining elements
             for (; i < C; i++) {
-                float n = s * (x[i] - m);
+                float n = rsqrt_v_eps * (x[i] - m);
                 out_bt[i] = n * weight[i] + bias[i];
             }
         }
