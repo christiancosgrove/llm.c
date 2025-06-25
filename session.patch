@@ -1,53 +1,37 @@
 diff --git a/doc/layernorm/layernorm_functions.c b/doc/layernorm/layernorm_functions.c
-index 8f85152..ff4179c 100644
+index ff4179c..ee8850f 100644
 --- a/doc/layernorm/layernorm_functions.c
 +++ b/doc/layernorm/layernorm_functions.c
-@@ -55,15 +55,18 @@ void layernorm_forward(float* out, float* mean, float* rstd,
-                 sum_sq_vec1 = _mm256_fmadd_ps(x_vec, x_vec, sum_sq_vec1);
-             }
-             
--            // Optimized horizontal reduction using manual element extraction
--            float sum_array[8], sum_sq_array[8];
--            _mm256_storeu_ps(sum_array, sum_vec1);
--            _mm256_storeu_ps(sum_sq_array, sum_sq_vec1);
-+            // More efficient horizontal reduction using hadd intrinsics
-+            __m256 sum_hadd1 = _mm256_hadd_ps(sum_vec1, sum_vec1);
-+            __m256 sum_hadd2 = _mm256_hadd_ps(sum_hadd1, sum_hadd1);
-+            __m128 sum_lo = _mm256_extractf128_ps(sum_hadd2, 0);
-+            __m128 sum_hi = _mm256_extractf128_ps(sum_hadd2, 1);
-+            float sum = _mm_cvtss_f32(_mm_add_ss(sum_lo, sum_hi));
-             
--            float sum = sum_array[0] + sum_array[1] + sum_array[2] + sum_array[3] + 
--                       sum_array[4] + sum_array[5] + sum_array[6] + sum_array[7];
--            float sum_sq = sum_sq_array[0] + sum_sq_array[1] + sum_sq_array[2] + sum_sq_array[3] + 
--                          sum_sq_array[4] + sum_sq_array[5] + sum_sq_array[6] + sum_sq_array[7];
-+            __m256 sq_hadd1 = _mm256_hadd_ps(sum_sq_vec1, sum_sq_vec1);
-+            __m256 sq_hadd2 = _mm256_hadd_ps(sq_hadd1, sq_hadd1);
-+            __m128 sq_lo = _mm256_extractf128_ps(sq_hadd2, 0);
-+            __m128 sq_hi = _mm256_extractf128_ps(sq_hadd2, 1);
-+            float sum_sq = _mm_cvtss_f32(_mm_add_ss(sq_lo, sq_hi));
-             
-             // Handle remaining elements
-             for (; i < C; i++) {
-@@ -74,7 +77,10 @@ void layernorm_forward(float* out, float* mean, float* rstd,
-             
-             float m = sum * inv_C;
-             float v = sum_sq * inv_C - m * m;
--            float s = 1.0f / sqrtf(v + eps);
-+            float s = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(v + eps)));
-+            // Newton-Raphson refinement for better accuracy
-+            float half_v_eps = (v + eps) * 0.5f;
-+            s = s * (1.5f - half_v_eps * s * s);
-             
-             // Store mean and rstd early for better cache locality
-             mean[b * T + t] = m;
+@@ -111,17 +111,11 @@ void layernorm_forward(float* out, float* mean, float* rstd,
+                 __m256 bias_vec3 = _mm256_loadu_ps(&bias[i + 16]);
+                 __m256 bias_vec4 = _mm256_loadu_ps(&bias[i + 24]);
+                 
+-                // Compute normalized values: s * (x - m)
+-                __m256 norm_vec1 = _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec1, m_vec));
+-                __m256 norm_vec2 = _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec2, m_vec));
+-                __m256 norm_vec3 = _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec3, m_vec));
+-                __m256 norm_vec4 = _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec4, m_vec));
+-                
+-                // Apply weight and bias: norm * weight + bias
+-                __m256 result1 = _mm256_fmadd_ps(norm_vec1, weight_vec1, bias_vec1);
+-                __m256 result2 = _mm256_fmadd_ps(norm_vec2, weight_vec2, bias_vec2);
+-                __m256 result3 = _mm256_fmadd_ps(norm_vec3, weight_vec3, bias_vec3);
+-                __m256 result4 = _mm256_fmadd_ps(norm_vec4, weight_vec4, bias_vec4);
++                // Fused computation: weight * s * (x - m) + bias using FMA
++                __m256 result1 = _mm256_fmadd_ps(weight_vec1, _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec1, m_vec)), bias_vec1);
++                __m256 result2 = _mm256_fmadd_ps(weight_vec2, _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec2, m_vec)), bias_vec2);
++                __m256 result3 = _mm256_fmadd_ps(weight_vec3, _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec3, m_vec)), bias_vec3);
++                __m256 result4 = _mm256_fmadd_ps(weight_vec4, _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec4, m_vec)), bias_vec4);
+                 
+                 _mm256_storeu_ps(&out_bt[i], result1);
+                 _mm256_storeu_ps(&out_bt[i + 8], result2);
 diff --git a/optimization_results.json b/optimization_results.json
-index 029065a..d80aa23 100644
+index d80aa23..d298c3f 100644
 --- a/optimization_results.json
 +++ b/optimization_results.json
 @@ -1,3 +1,3 @@
  {
--  "score": 0.029886
-+  "score": 0.027973
+-  "score": 0.027973
++  "score": 0.028657
  }
 \ No newline at end of file

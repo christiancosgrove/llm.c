@@ -111,17 +111,11 @@ void layernorm_forward(float* out, float* mean, float* rstd,
                 __m256 bias_vec3 = _mm256_loadu_ps(&bias[i + 16]);
                 __m256 bias_vec4 = _mm256_loadu_ps(&bias[i + 24]);
                 
-                // Compute normalized values: s * (x - m)
-                __m256 norm_vec1 = _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec1, m_vec));
-                __m256 norm_vec2 = _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec2, m_vec));
-                __m256 norm_vec3 = _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec3, m_vec));
-                __m256 norm_vec4 = _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec4, m_vec));
-                
-                // Apply weight and bias: norm * weight + bias
-                __m256 result1 = _mm256_fmadd_ps(norm_vec1, weight_vec1, bias_vec1);
-                __m256 result2 = _mm256_fmadd_ps(norm_vec2, weight_vec2, bias_vec2);
-                __m256 result3 = _mm256_fmadd_ps(norm_vec3, weight_vec3, bias_vec3);
-                __m256 result4 = _mm256_fmadd_ps(norm_vec4, weight_vec4, bias_vec4);
+                // Fused computation: weight * s * (x - m) + bias using FMA
+                __m256 result1 = _mm256_fmadd_ps(weight_vec1, _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec1, m_vec)), bias_vec1);
+                __m256 result2 = _mm256_fmadd_ps(weight_vec2, _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec2, m_vec)), bias_vec2);
+                __m256 result3 = _mm256_fmadd_ps(weight_vec3, _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec3, m_vec)), bias_vec3);
+                __m256 result4 = _mm256_fmadd_ps(weight_vec4, _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec4, m_vec)), bias_vec4);
                 
                 _mm256_storeu_ps(&out_bt[i], result1);
                 _mm256_storeu_ps(&out_bt[i + 8], result2);
