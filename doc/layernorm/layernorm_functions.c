@@ -55,18 +55,15 @@ void layernorm_forward(float* out, float* mean, float* rstd,
                 sum_sq_vec1 = _mm256_fmadd_ps(x_vec, x_vec, sum_sq_vec1);
             }
             
-            // More efficient horizontal reduction using hadd intrinsics
-            __m256 sum_hadd1 = _mm256_hadd_ps(sum_vec1, sum_vec1);
-            __m256 sum_hadd2 = _mm256_hadd_ps(sum_hadd1, sum_hadd1);
-            __m128 sum_lo = _mm256_extractf128_ps(sum_hadd2, 0);
-            __m128 sum_hi = _mm256_extractf128_ps(sum_hadd2, 1);
-            float sum = _mm_cvtss_f32(_mm_add_ss(sum_lo, sum_hi));
+            // Simplified horizontal reduction using array extraction
+            float sum_arr[8], sum_sq_arr[8];
+            _mm256_storeu_ps(sum_arr, sum_vec1);
+            _mm256_storeu_ps(sum_sq_arr, sum_sq_vec1);
             
-            __m256 sq_hadd1 = _mm256_hadd_ps(sum_sq_vec1, sum_sq_vec1);
-            __m256 sq_hadd2 = _mm256_hadd_ps(sq_hadd1, sq_hadd1);
-            __m128 sq_lo = _mm256_extractf128_ps(sq_hadd2, 0);
-            __m128 sq_hi = _mm256_extractf128_ps(sq_hadd2, 1);
-            float sum_sq = _mm_cvtss_f32(_mm_add_ss(sq_lo, sq_hi));
+            float sum = sum_arr[0] + sum_arr[1] + sum_arr[2] + sum_arr[3] + 
+                       sum_arr[4] + sum_arr[5] + sum_arr[6] + sum_arr[7];
+            float sum_sq = sum_sq_arr[0] + sum_sq_arr[1] + sum_sq_arr[2] + sum_sq_arr[3] + 
+                          sum_sq_arr[4] + sum_sq_arr[5] + sum_sq_arr[6] + sum_sq_arr[7];
             
             // Handle remaining elements
             for (; i < C; i++) {
@@ -77,10 +74,11 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             
             float m = sum * inv_C;
             float v = sum_sq * inv_C - m * m;
-            float s = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(v + eps)));
-            // Newton-Raphson refinement for better accuracy
-            float half_v_eps = (v + eps) * 0.5f;
-            s = s * (1.5f - half_v_eps * s * s);
+            float v_eps = v + eps;
+            
+            // Optimized inverse square root with single Newton-Raphson step
+            float s = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(v_eps)));
+            s = s * (1.5f - 0.5f * v_eps * s * s);
             
             // Store mean and rstd early for better cache locality
             mean[b * T + t] = m;
@@ -111,11 +109,16 @@ void layernorm_forward(float* out, float* mean, float* rstd,
                 __m256 bias_vec3 = _mm256_loadu_ps(&bias[i + 16]);
                 __m256 bias_vec4 = _mm256_loadu_ps(&bias[i + 24]);
                 
-                // Fused computation: weight * s * (x - m) + bias using FMA
-                __m256 result1 = _mm256_fmadd_ps(weight_vec1, _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec1, m_vec)), bias_vec1);
-                __m256 result2 = _mm256_fmadd_ps(weight_vec2, _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec2, m_vec)), bias_vec2);
-                __m256 result3 = _mm256_fmadd_ps(weight_vec3, _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec3, m_vec)), bias_vec3);
-                __m256 result4 = _mm256_fmadd_ps(weight_vec4, _mm256_mul_ps(s_vec, _mm256_sub_ps(x_vec4, m_vec)), bias_vec4);
+                // More efficient computation: s * weight * (x - m) + bias
+                __m256 sw_vec1 = _mm256_mul_ps(s_vec, weight_vec1);
+                __m256 sw_vec2 = _mm256_mul_ps(s_vec, weight_vec2);
+                __m256 sw_vec3 = _mm256_mul_ps(s_vec, weight_vec3);
+                __m256 sw_vec4 = _mm256_mul_ps(s_vec, weight_vec4);
+                
+                __m256 result1 = _mm256_fmadd_ps(sw_vec1, _mm256_sub_ps(x_vec1, m_vec), bias_vec1);
+                __m256 result2 = _mm256_fmadd_ps(sw_vec2, _mm256_sub_ps(x_vec2, m_vec), bias_vec2);
+                __m256 result3 = _mm256_fmadd_ps(sw_vec3, _mm256_sub_ps(x_vec3, m_vec), bias_vec3);
+                __m256 result4 = _mm256_fmadd_ps(sw_vec4, _mm256_sub_ps(x_vec4, m_vec), bias_vec4);
                 
                 _mm256_storeu_ps(&out_bt[i], result1);
                 _mm256_storeu_ps(&out_bt[i + 8], result2);
