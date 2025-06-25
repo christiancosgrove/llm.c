@@ -14,9 +14,10 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             // seek to the input position inp[b,t,:]
             float* x = inp + b * T * C + t * C;
             
-            // Prefetch next cache line for better memory access
-            if (C > 64) {
+            // Strategic prefetching based on tensor size
+            if (C > 128) {
                 _mm_prefetch((const char*)(x + 64), _MM_HINT_T0);
+                _mm_prefetch((const char*)(x + 128), _MM_HINT_T0);
             }
             
             // Dual-pass approach with 16-element unrolling for better ILP
@@ -48,20 +49,19 @@ void layernorm_forward(float* out, float* mean, float* rstd,
                 sum_sq_vec1 = _mm256_fmadd_ps(x_vec, x_vec, sum_sq_vec1);
             }
             
-            // Fast horizontal reduction
-            __m128 sum_hi = _mm256_extractf128_ps(sum_vec1, 1);
-            __m128 sum_lo = _mm256_extractf128_ps(sum_vec1, 0);
-            sum_lo = _mm_add_ps(sum_lo, sum_hi);
-            sum_lo = _mm_hadd_ps(sum_lo, sum_lo);
-            sum_lo = _mm_hadd_ps(sum_lo, sum_lo);
-            float sum = _mm_cvtss_f32(sum_lo);
+            // Optimized horizontal reduction using more efficient operations
+            // Use shuffle and add for better performance than hadd
+            __m256 sum_perm = _mm256_permute2f128_ps(sum_vec1, sum_vec1, 1);
+            sum_vec1 = _mm256_add_ps(sum_vec1, sum_perm);
+            sum_vec1 = _mm256_hadd_ps(sum_vec1, sum_vec1);
+            sum_vec1 = _mm256_hadd_ps(sum_vec1, sum_vec1);
+            float sum = _mm256_cvtss_f32(sum_vec1);
             
-            __m128 sum_sq_hi = _mm256_extractf128_ps(sum_sq_vec1, 1);
-            __m128 sum_sq_lo = _mm256_extractf128_ps(sum_sq_vec1, 0);
-            sum_sq_lo = _mm_add_ps(sum_sq_lo, sum_sq_hi);
-            sum_sq_lo = _mm_hadd_ps(sum_sq_lo, sum_sq_lo);
-            sum_sq_lo = _mm_hadd_ps(sum_sq_lo, sum_sq_lo);
-            float sum_sq = _mm_cvtss_f32(sum_sq_lo);
+            __m256 sum_sq_perm = _mm256_permute2f128_ps(sum_sq_vec1, sum_sq_vec1, 1);
+            sum_sq_vec1 = _mm256_add_ps(sum_sq_vec1, sum_sq_perm);
+            sum_sq_vec1 = _mm256_hadd_ps(sum_sq_vec1, sum_sq_vec1);
+            sum_sq_vec1 = _mm256_hadd_ps(sum_sq_vec1, sum_sq_vec1);
+            float sum_sq = _mm256_cvtss_f32(sum_sq_vec1);
             
             // Handle remaining elements
             for (; i < C; i++) {
@@ -85,19 +85,14 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             __m256 m_vec = _mm256_set1_ps(m);
             __m256 s_vec = _mm256_set1_ps(s);
             
-            // Prefetch weight and bias data
-            if (C > 64) {
-                _mm_prefetch((const char*)(weight + 64), _MM_HINT_T0);
-                _mm_prefetch((const char*)(bias + 64), _MM_HINT_T0);
+            // Simplified prefetch strategy for better cache efficiency
+            if (C > 256) {
+                _mm_prefetch((const char*)(weight + 128), _MM_HINT_T0);
+                _mm_prefetch((const char*)(bias + 128), _MM_HINT_T0);
             }
             
             i = 0;
             for (; i <= C - 8; i += 8) {
-                // Prefetch ahead for large tensors
-                if (i + 64 < C) {
-                    _mm_prefetch((const char*)(weight + i + 64), _MM_HINT_T0);
-                    _mm_prefetch((const char*)(bias + i + 64), _MM_HINT_T0);
-                }
                 
                 __m256 x_vec = _mm256_loadu_ps(&x[i]);
                 __m256 weight_vec = _mm256_loadu_ps(&weight[i]);

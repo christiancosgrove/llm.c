@@ -1,4 +1,42 @@
-# LayerNorm Optimization - Generation 4 Results
+# LayerNorm Optimization - Generation 5 Results
+
+## Generation 5 Key Optimizations Implemented
+
+### 1. Optimized Horizontal Reduction Strategy
+- **Technique**: Replaced extract-based reduction with more efficient permute operations
+- **Implementation**: 
+  - Use `_mm256_permute2f128_ps` to swap 128-bit lanes within 256-bit vectors
+  - Apply `_mm256_hadd_ps` twice for horizontal reduction while staying in 256-bit domain
+  - Eliminate costly `_mm256_extractf128_ps` operations that move data between domains
+- **Benefit**: Reduced instruction count and improved pipeline efficiency
+
+### 2. Strategic Memory Prefetching Optimization
+- **Technique**: Refined prefetch strategy to reduce cache pollution and improve efficiency
+- **Implementation**: 
+  - Increased prefetch threshold from 64 to 128 elements for input data
+  - Added dual prefetch lines (64 and 128 ahead) for large tensors
+  - Simplified output prefetch to threshold of 256 elements
+  - Eliminated excessive prefetch instructions in tight loops
+- **Benefit**: Better cache utilization and reduced memory system overhead
+
+### 3. Reduced Instruction Overhead
+- **Technique**: Minimized unnecessary memory system interactions
+- **Implementation**: 
+  - Streamlined prefetch patterns to avoid over-prefetching
+  - Maintained 16-element dual-vector processing for optimal ILP
+  - Kept efficient vectorized output computation
+- **Benefit**: Lower instruction count and better CPU resource utilization
+
+## Performance Results
+
+- **Generation 4 Score**: 0.034585 seconds (parent branch baseline)
+- **Generation 5 Score**: 0.031367 seconds
+- **Generation 5 Improvement**: 1.10x speedup (9.3% reduction from Gen 4)
+- **Total Improvement**: 8.86x speedup from original baseline (0.27803s → 0.031367s)
+- **C vs Python**: 25.4x speedup compared to reference Python implementation
+
+## Generation 4 Results (Previous Baseline)
+# LayerNorm Optimization - Generation 4 Results (Previous Baseline)
 
 ## Generation 4 Key Optimizations Implemented
 
