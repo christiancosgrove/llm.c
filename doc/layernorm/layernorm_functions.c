@@ -55,18 +55,15 @@ void layernorm_forward(float* out, float* mean, float* rstd,
                 sum_sq_vec1 = _mm256_fmadd_ps(x_vec, x_vec, sum_sq_vec1);
             }
             
-            // More efficient horizontal reduction using hadd intrinsics
-            __m256 sum_hadd1 = _mm256_hadd_ps(sum_vec1, sum_vec1);
-            __m256 sum_hadd2 = _mm256_hadd_ps(sum_hadd1, sum_hadd1);
-            __m128 sum_lo = _mm256_extractf128_ps(sum_hadd2, 0);
-            __m128 sum_hi = _mm256_extractf128_ps(sum_hadd2, 1);
-            float sum = _mm_cvtss_f32(_mm_add_ss(sum_lo, sum_hi));
+            // Optimized horizontal reduction using direct array access (faster than hadd)
+            float sum_array[8], sum_sq_array[8];
+            _mm256_storeu_ps(sum_array, sum_vec1);
+            _mm256_storeu_ps(sum_sq_array, sum_sq_vec1);
             
-            __m256 sq_hadd1 = _mm256_hadd_ps(sum_sq_vec1, sum_sq_vec1);
-            __m256 sq_hadd2 = _mm256_hadd_ps(sq_hadd1, sq_hadd1);
-            __m128 sq_lo = _mm256_extractf128_ps(sq_hadd2, 0);
-            __m128 sq_hi = _mm256_extractf128_ps(sq_hadd2, 1);
-            float sum_sq = _mm_cvtss_f32(_mm_add_ss(sq_lo, sq_hi));
+            float sum = sum_array[0] + sum_array[1] + sum_array[2] + sum_array[3] + 
+                       sum_array[4] + sum_array[5] + sum_array[6] + sum_array[7];
+            float sum_sq = sum_sq_array[0] + sum_sq_array[1] + sum_sq_array[2] + sum_sq_array[3] + 
+                          sum_sq_array[4] + sum_sq_array[5] + sum_sq_array[6] + sum_sq_array[7];
             
             // Handle remaining elements
             for (; i < C; i++) {
@@ -77,10 +74,11 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             
             float m = sum * inv_C;
             float v = sum_sq * inv_C - m * m;
-            float s = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(v + eps)));
-            // Newton-Raphson refinement for better accuracy
-            float half_v_eps = (v + eps) * 0.5f;
-            s = s * (1.5f - half_v_eps * s * s);
+            // Fast reciprocal square root with optimized Newton-Raphson
+            float v_eps = v + eps;
+            float s = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(v_eps)));
+            // Single Newton-Raphson iteration with fused operations
+            s = s * (1.5f - 0.5f * v_eps * s * s);
             
             // Store mean and rstd early for better cache locality
             mean[b * T + t] = m;

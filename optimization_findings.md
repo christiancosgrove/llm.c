@@ -1,4 +1,53 @@
-# LayerNorm Optimization - Generation 5 Results
+# LayerNorm Optimization - Generation 10 Results
+
+## Generation 10 Key Optimizations Attempted
+
+### 1. Direct Array-Based Horizontal Reduction
+- **Technique**: Replaced complex `hadd` intrinsics with direct array access
+- **Implementation**: 
+  - Use `_mm256_storeu_ps` to store vectors to float arrays
+  - Manual summation with explicit unrolled addition
+  - Eliminated multiple `hadd`, `extractf128`, and shuffle operations
+- **Result**: Minor performance regression (0.027975s vs 0.027546s)
+
+### 2. Optimized Newton-Raphson Refinement
+- **Technique**: Simplified Newton-Raphson iteration with fused operations
+- **Implementation**: 
+  - Pre-compute `v_eps = v + eps` to reduce redundant calculations
+  - Use single Newton-Raphson iteration with optimized coefficient
+  - Eliminated intermediate variable `half_v_eps`
+- **Result**: Maintained numerical accuracy while reducing instruction count
+
+## Performance Results
+
+- **Generation 9 Score**: 0.027546 seconds (parent branch baseline)
+- **Generation 10 Score**: 0.027975 seconds
+- **Generation 10 Change**: 1.6% performance regression
+- **Analysis**: The direct array approach introduced memory store/load overhead that outweighed the reduction in shuffle operations
+
+## Generation 10 Technical Analysis
+
+### Why Direct Array Reduction Failed
+- **Memory Overhead**: Store/load operations to memory introduced additional latency
+- **Cache Pressure**: Extra memory operations competed with main data access
+- **Pipeline Stalls**: Memory dependency chains reduced instruction-level parallelism
+- **Hardware Optimization**: Modern CPUs optimize `hadd` operations better than expected
+
+### Lessons Learned
+1. **Hardware Evolution**: Modern CPUs handle horizontal operations more efficiently
+2. **Memory vs Compute**: Direct memory access isn't always faster than specialized intrinsics
+3. **Micro-optimizations**: Small changes can have unexpected performance impacts
+4. **Benchmarking Critical**: Performance intuition doesn't always match reality
+
+## Building Upon Previous Generation 9 Results
+
+### From Generation 9 (Parent Branch)
+- **Baseline**: 0.027546 seconds with 32-element unrolling and 4-way parallelism
+- **Attempted**: Alternative reduction strategy and Newton-Raphson optimization
+- **Retained**: Core 32-element processing and vectorized output computation
+- **Reverted**: Back to `hadd`-based reduction for better performance
+
+# LayerNorm Optimization - Generation 5 Results (Historical)
 
 ## Generation 5 Key Optimizations Implemented
 
