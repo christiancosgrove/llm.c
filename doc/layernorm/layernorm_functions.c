@@ -14,6 +14,11 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             // seek to the input position inp[b,t,:]
             float* x = inp + b * T * C + t * C;
             
+            // Prefetch next cache line for better memory performance
+            if (t + 1 < T) {
+                __builtin_prefetch(inp + b * T * C + (t + 1) * C, 0, 3);
+            }
+            
             // Single pass for mean and variance calculation using AVX
             __m256 sum_vec = _mm256_setzero_ps();
             __m256 sum_sq_vec = _mm256_setzero_ps();
@@ -21,20 +26,32 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             int i = 0;
             // Process 8 elements at a time with AVX
             for (; i <= C - 8; i += 8) {
+                // Prefetch ahead for large C values
+                if (i + 64 < C) {
+                    __builtin_prefetch(&x[i + 64], 0, 3);
+                }
+                
                 __m256 x_vec = _mm256_loadu_ps(&x[i]);
                 sum_vec = _mm256_add_ps(sum_vec, x_vec);
                 sum_sq_vec = _mm256_fmadd_ps(x_vec, x_vec, sum_sq_vec);
             }
             
-            // Horizontal reduction of AVX vectors
-            float sum_array[8], sum_sq_array[8];
-            _mm256_storeu_ps(sum_array, sum_vec);
-            _mm256_storeu_ps(sum_sq_array, sum_sq_vec);
+            // Optimized horizontal reduction using AVX intrinsics
+            // Sum reduction
+            __m128 sum_hi = _mm256_extractf128_ps(sum_vec, 1);
+            __m128 sum_lo = _mm256_castps256_ps128(sum_vec);
+            __m128 sum_quad = _mm_add_ps(sum_hi, sum_lo);
+            sum_quad = _mm_hadd_ps(sum_quad, sum_quad);
+            sum_quad = _mm_hadd_ps(sum_quad, sum_quad);
+            float sum = _mm_cvtss_f32(sum_quad);
             
-            float sum = sum_array[0] + sum_array[1] + sum_array[2] + sum_array[3] +
-                       sum_array[4] + sum_array[5] + sum_array[6] + sum_array[7];
-            float sum_sq = sum_sq_array[0] + sum_sq_array[1] + sum_sq_array[2] + sum_sq_array[3] +
-                          sum_sq_array[4] + sum_sq_array[5] + sum_sq_array[6] + sum_sq_array[7];
+            // Sum of squares reduction
+            __m128 sum_sq_hi = _mm256_extractf128_ps(sum_sq_vec, 1);
+            __m128 sum_sq_lo = _mm256_castps256_ps128(sum_sq_vec);
+            __m128 sum_sq_quad = _mm_add_ps(sum_sq_hi, sum_sq_lo);
+            sum_sq_quad = _mm_hadd_ps(sum_sq_quad, sum_sq_quad);
+            sum_sq_quad = _mm_hadd_ps(sum_sq_quad, sum_sq_quad);
+            float sum_sq = _mm_cvtss_f32(sum_sq_quad);
             
             // Handle remaining elements with unrolling
             for (; i < C - 3; i += 4) {
@@ -65,6 +82,13 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             
             i = 0;
             for (; i <= C - 8; i += 8) {
+                // Prefetch output memory ahead
+                if (i + 64 < C) {
+                    __builtin_prefetch(&out_bt[i + 64], 1, 3);
+                    __builtin_prefetch(&weight[i + 64], 0, 3);
+                    __builtin_prefetch(&bias[i + 64], 0, 3);
+                }
+                
                 __m256 x_vec = _mm256_loadu_ps(&x[i]);
                 __m256 weight_vec = _mm256_loadu_ps(&weight[i]);
                 __m256 bias_vec = _mm256_loadu_ps(&bias[i]);
@@ -78,17 +102,19 @@ void layernorm_forward(float* out, float* mean, float* rstd,
                 _mm256_storeu_ps(&out_bt[i], result);
             }
             
-            // Handle remaining elements with unrolling
-            for (; i < C - 3; i += 4) {
-                float n0 = s * (x[i] - m);
-                float n1 = s * (x[i+1] - m);
-                float n2 = s * (x[i+2] - m);
-                float n3 = s * (x[i+3] - m);
+            // Handle remaining elements with SSE for better vectorization
+            if (i <= C - 4) {
+                __m128 x_vec = _mm_loadu_ps(&x[i]);
+                __m128 weight_vec = _mm_loadu_ps(&weight[i]);
+                __m128 bias_vec = _mm_loadu_ps(&bias[i]);
+                __m128 m_vec = _mm_set1_ps(m);
+                __m128 s_vec = _mm_set1_ps(s);
                 
-                out_bt[i] = n0 * weight[i] + bias[i];
-                out_bt[i+1] = n1 * weight[i+1] + bias[i+1];
-                out_bt[i+2] = n2 * weight[i+2] + bias[i+2];
-                out_bt[i+3] = n3 * weight[i+3] + bias[i+3];
+                __m128 norm_vec = _mm_mul_ps(s_vec, _mm_sub_ps(x_vec, m_vec));
+                __m128 result = _mm_fmadd_ps(norm_vec, weight_vec, bias_vec);
+                
+                _mm_storeu_ps(&out_bt[i], result);
+                i += 4;
             }
             for (; i < C; i++) {
                 float n = s * (x[i] - m);

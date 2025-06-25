@@ -1,4 +1,70 @@
-# LayerNorm Optimization - Generation 2 Results
+# LayerNorm Optimization - Generation 3 Results
+
+## Generation 3 Summary
+- **Parent Score**: 0.039596 seconds (Generation 2, branch: evolve/gen2_cand2_1750869482)
+- **Generation 3 Score**: 0.043151 seconds
+- **Performance**: 8.9% slower than parent (-0.003555s regression)
+- **Status**: Performance regression - optimizations introduced overhead
+
+## Generation 3 Optimizations Attempted
+
+### 1. Advanced Horizontal Reduction
+- **Technique**: Replaced store-to-array reduction with dedicated AVX intrinsics
+- **Implementation**: Used `_mm256_extractf128_ps`, `_mm_hadd_ps` for direct reduction
+- **Expected Benefit**: Eliminate memory stores/loads in reduction phase
+- **Actual Result**: Slight overhead from additional intrinsic operations
+
+### 2. Cache Prefetching
+- **Technique**: Added `__builtin_prefetch` hints for memory access patterns
+- **Implementation**: 
+  - Prefetch next tensor slice: `__builtin_prefetch(inp + b * T * C + (t + 1) * C, 0, 3)`
+  - Prefetch ahead in processing loops: `__builtin_prefetch(&x[i + 64], 0, 3)`
+  - Prefetch output memory and weights/bias arrays
+- **Expected Benefit**: Reduce cache misses for large tensors
+- **Actual Result**: Prefetch overhead exceeded benefits for typical tensor sizes
+
+### 3. SSE Remainder Handling
+- **Technique**: Use 128-bit SSE for 4-element remainder processing instead of scalar
+- **Implementation**: `_mm_loadu_ps`, `_mm_fmadd_ps` for vectorized remainder computation
+- **Expected Benefit**: Better vectorization of remainder elements
+- **Actual Result**: Marginal improvement offset by setup overhead
+
+## Performance Analysis
+
+### Regression Factors
+1. **Micro-optimization Overhead**: Advanced intrinsics introduced instruction overhead
+2. **Prefetch Penalties**: Cache prefetching created unnecessary memory traffic
+3. **Diminishing Returns**: Previous generation already achieved near-optimal performance
+4. **Tensor Size Mismatch**: Optimizations targeted large tensors but test uses smaller sizes
+
+### Numerical Accuracy
+- **dx error**: 1.19e-06 (slightly higher than previous generations)
+- **dw/db errors**: 0.0 (maintained)
+- **Still within acceptable tolerance but trending upward**
+
+## Key Learnings for Future Generations
+
+### What Doesn't Work
+1. **Excessive Prefetching**: Can hurt performance on smaller tensors
+2. **Over-optimized Reductions**: Simple approaches often outperform complex intrinsics
+3. **Micro-optimizations**: May introduce overhead that exceeds benefits
+
+### Recommendations for Generation 4
+1. **Revert to Generation 2 Base**: Start from proven 0.039596s performance
+2. **Focus on Algorithmic Changes**: 
+   - Explore Welford's online algorithm for better numerical stability
+   - Consider different mathematical formulations
+3. **Profile-Guided Optimization**: Use actual profiling data to identify bottlenecks
+4. **Specialized Kernels**: Create optimized versions for specific common C values
+5. **Threading**: Explore OpenMP parallelization across B,T dimensions
+
+### Alternative Approaches
+1. **Memory Layout Optimization**: Experiment with data blocking/tiling
+2. **Approximation Methods**: Fast inverse square root for non-critical applications
+3. **Compiler Optimizations**: Focus on helping compiler rather than manual intrinsics
+4. **Target-Specific Code**: Detect CPU features and use optimal code paths
+
+# LayerNorm Optimization - Generation 2 Results (Previous Generation)
 
 ## Generation 2 Key Optimizations Implemented
 
