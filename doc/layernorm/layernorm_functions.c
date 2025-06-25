@@ -25,8 +25,18 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             __m256 sum_sq_vec4 = _mm256_setzero_ps();
             
             int i = 0;
-            // Process 32 elements at a time with 4-way AVX parallelism
+            // Process 32 elements at a time with strategic prefetching
+            // Add prefetch hint for next cache line when processing large tensors
+            if (C > 128) {
+                _mm_prefetch((const char*)&x[64], _MM_HINT_T0);
+            }
+            
             for (; i <= C - 32; i += 32) {
+                // Prefetch next iteration's data when processing large tensors
+                if (C > 128 && i + 64 < C) {
+                    _mm_prefetch((const char*)&x[i + 64], _MM_HINT_T0);
+                }
+                
                 __m256 x_vec1 = _mm256_loadu_ps(&x[i]);
                 __m256 x_vec2 = _mm256_loadu_ps(&x[i + 8]);
                 __m256 x_vec3 = _mm256_loadu_ps(&x[i + 16]);
