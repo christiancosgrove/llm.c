@@ -14,6 +14,11 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             // seek to the input position inp[b,t,:]
             float* x = inp + b * T * C + t * C;
             
+            // Prefetch next cache line for better memory access
+            if (C > 64) {
+                _mm_prefetch((const char*)(x + 64), _MM_HINT_T0);
+            }
+            
             // Single pass for mean and variance calculation using AVX
             __m256 sum_vec = _mm256_setzero_ps();
             __m256 sum_sq_vec = _mm256_setzero_ps();
@@ -21,20 +26,31 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             int i = 0;
             // Process 8 elements at a time with AVX
             for (; i <= C - 8; i += 8) {
+                // Prefetch ahead for large tensors
+                if (i + 64 < C) {
+                    _mm_prefetch((const char*)(x + i + 64), _MM_HINT_T0);
+                }
                 __m256 x_vec = _mm256_loadu_ps(&x[i]);
                 sum_vec = _mm256_add_ps(sum_vec, x_vec);
                 sum_sq_vec = _mm256_fmadd_ps(x_vec, x_vec, sum_sq_vec);
             }
             
-            // Horizontal reduction of AVX vectors
-            float sum_array[8], sum_sq_array[8];
-            _mm256_storeu_ps(sum_array, sum_vec);
-            _mm256_storeu_ps(sum_sq_array, sum_sq_vec);
+            // Optimized horizontal reduction using shuffle intrinsics
+            // Reduce sum_vec
+            __m256 sum_hi = _mm256_extractf128_ps(sum_vec, 1);
+            __m128 sum_lo = _mm256_extractf128_ps(sum_vec, 0);
+            __m128 sum_128 = _mm_add_ps(sum_lo, sum_hi);
+            sum_128 = _mm_hadd_ps(sum_128, sum_128);
+            sum_128 = _mm_hadd_ps(sum_128, sum_128);
+            float sum = _mm_cvtss_f32(sum_128);
             
-            float sum = sum_array[0] + sum_array[1] + sum_array[2] + sum_array[3] +
-                       sum_array[4] + sum_array[5] + sum_array[6] + sum_array[7];
-            float sum_sq = sum_sq_array[0] + sum_sq_array[1] + sum_sq_array[2] + sum_sq_array[3] +
-                          sum_sq_array[4] + sum_sq_array[5] + sum_sq_array[6] + sum_sq_array[7];
+            // Reduce sum_sq_vec
+            __m256 sum_sq_hi = _mm256_extractf128_ps(sum_sq_vec, 1);
+            __m128 sum_sq_lo = _mm256_extractf128_ps(sum_sq_vec, 0);
+            __m128 sum_sq_128 = _mm_add_ps(sum_sq_lo, sum_sq_hi);
+            sum_sq_128 = _mm_hadd_ps(sum_sq_128, sum_sq_128);
+            sum_sq_128 = _mm_hadd_ps(sum_sq_128, sum_sq_128);
+            float sum_sq = _mm_cvtss_f32(sum_sq_128);
             
             // Handle remaining elements with unrolling
             for (; i < C - 3; i += 4) {
@@ -59,12 +75,24 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             // seek to the output position in out[b,t,:]
             float* out_bt = out + b * T * C + t * C;
             
-            // Optimized output calculation with AVX
+            // Optimized output calculation with AVX and prefetching
             __m256 m_vec = _mm256_set1_ps(m);
             __m256 s_vec = _mm256_set1_ps(s);
             
+            // Prefetch weight and bias data
+            if (C > 64) {
+                _mm_prefetch((const char*)(weight + 64), _MM_HINT_T0);
+                _mm_prefetch((const char*)(bias + 64), _MM_HINT_T0);
+            }
+            
             i = 0;
             for (; i <= C - 8; i += 8) {
+                // Prefetch ahead for large tensors
+                if (i + 64 < C) {
+                    _mm_prefetch((const char*)(weight + i + 64), _MM_HINT_T0);
+                    _mm_prefetch((const char*)(bias + i + 64), _MM_HINT_T0);
+                }
+                
                 __m256 x_vec = _mm256_loadu_ps(&x[i]);
                 __m256 weight_vec = _mm256_loadu_ps(&weight[i]);
                 __m256 bias_vec = _mm256_loadu_ps(&bias[i]);
