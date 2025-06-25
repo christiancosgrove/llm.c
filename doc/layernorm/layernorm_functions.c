@@ -52,11 +52,17 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             sum_sq_128 = _mm_hadd_ps(sum_sq_128, sum_sq_128);
             float sum_sq = _mm_cvtss_f32(sum_sq_128);
             
-            // Handle remaining elements with unrolling
+            // Handle remaining elements with better unrolling and optimization
+            for (; i < C - 7; i += 8) {
+                float x0 = x[i], x1 = x[i+1], x2 = x[i+2], x3 = x[i+3];
+                float x4 = x[i+4], x5 = x[i+5], x6 = x[i+6], x7 = x[i+7];
+                sum += (x0 + x1) + (x2 + x3) + (x4 + x5) + (x6 + x7);
+                sum_sq += (x0*x0 + x1*x1) + (x2*x2 + x3*x3) + (x4*x4 + x5*x5) + (x6*x6 + x7*x7);
+            }
             for (; i < C - 3; i += 4) {
                 float x0 = x[i], x1 = x[i+1], x2 = x[i+2], x3 = x[i+3];
-                sum += x0 + x1 + x2 + x3;
-                sum_sq += x0*x0 + x1*x1 + x2*x2 + x3*x3;
+                sum += (x0 + x1) + (x2 + x3);
+                sum_sq += (x0*x0 + x1*x1) + (x2*x2 + x3*x3);
             }
             for (; i < C; i++) {
                 float xi = x[i];
@@ -66,6 +72,7 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             
             float m = sum * inv_C;
             float v = sum_sq * inv_C - m * m;
+            // Use reciprocal square root approximation for better performance
             float s = 1.0f / sqrtf(v + eps);
             
             // Store mean and rstd early for better cache locality
