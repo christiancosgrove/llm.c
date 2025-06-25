@@ -19,45 +19,51 @@ void layernorm_forward(float* out, float* mean, float* rstd,
                 _mm_prefetch((const char*)(x + 64), _MM_HINT_T0);
             }
             
-            // Single pass for mean and variance calculation using AVX
-            __m256 sum_vec = _mm256_setzero_ps();
-            __m256 sum_sq_vec = _mm256_setzero_ps();
+            // Dual-pass approach with 16-element unrolling for better ILP
+            __m256 sum_vec1 = _mm256_setzero_ps();
+            __m256 sum_vec2 = _mm256_setzero_ps();
+            __m256 sum_sq_vec1 = _mm256_setzero_ps();
+            __m256 sum_sq_vec2 = _mm256_setzero_ps();
             
             int i = 0;
-            // Process 8 elements at a time with AVX
+            // Process 16 elements at a time with dual AVX vectors
+            for (; i <= C - 16; i += 16) {
+                __m256 x_vec1 = _mm256_loadu_ps(&x[i]);
+                __m256 x_vec2 = _mm256_loadu_ps(&x[i + 8]);
+                
+                sum_vec1 = _mm256_add_ps(sum_vec1, x_vec1);
+                sum_vec2 = _mm256_add_ps(sum_vec2, x_vec2);
+                sum_sq_vec1 = _mm256_fmadd_ps(x_vec1, x_vec1, sum_sq_vec1);
+                sum_sq_vec2 = _mm256_fmadd_ps(x_vec2, x_vec2, sum_sq_vec2);
+            }
+            
+            // Combine the dual vectors
+            sum_vec1 = _mm256_add_ps(sum_vec1, sum_vec2);
+            sum_sq_vec1 = _mm256_add_ps(sum_sq_vec1, sum_sq_vec2);
+            
+            // Process remaining 8 elements
             for (; i <= C - 8; i += 8) {
-                // Prefetch ahead for large tensors
-                if (i + 64 < C) {
-                    _mm_prefetch((const char*)(x + i + 64), _MM_HINT_T0);
-                }
                 __m256 x_vec = _mm256_loadu_ps(&x[i]);
-                sum_vec = _mm256_add_ps(sum_vec, x_vec);
-                sum_sq_vec = _mm256_fmadd_ps(x_vec, x_vec, sum_sq_vec);
+                sum_vec1 = _mm256_add_ps(sum_vec1, x_vec);
+                sum_sq_vec1 = _mm256_fmadd_ps(x_vec, x_vec, sum_sq_vec1);
             }
             
-            // Optimized horizontal reduction using shuffle intrinsics
-            // Reduce sum_vec
-            __m256 sum_hi = _mm256_extractf128_ps(sum_vec, 1);
-            __m128 sum_lo = _mm256_extractf128_ps(sum_vec, 0);
-            __m128 sum_128 = _mm_add_ps(sum_lo, sum_hi);
-            sum_128 = _mm_hadd_ps(sum_128, sum_128);
-            sum_128 = _mm_hadd_ps(sum_128, sum_128);
-            float sum = _mm_cvtss_f32(sum_128);
+            // Fast horizontal reduction
+            __m128 sum_hi = _mm256_extractf128_ps(sum_vec1, 1);
+            __m128 sum_lo = _mm256_extractf128_ps(sum_vec1, 0);
+            sum_lo = _mm_add_ps(sum_lo, sum_hi);
+            sum_lo = _mm_hadd_ps(sum_lo, sum_lo);
+            sum_lo = _mm_hadd_ps(sum_lo, sum_lo);
+            float sum = _mm_cvtss_f32(sum_lo);
             
-            // Reduce sum_sq_vec
-            __m256 sum_sq_hi = _mm256_extractf128_ps(sum_sq_vec, 1);
-            __m128 sum_sq_lo = _mm256_extractf128_ps(sum_sq_vec, 0);
-            __m128 sum_sq_128 = _mm_add_ps(sum_sq_lo, sum_sq_hi);
-            sum_sq_128 = _mm_hadd_ps(sum_sq_128, sum_sq_128);
-            sum_sq_128 = _mm_hadd_ps(sum_sq_128, sum_sq_128);
-            float sum_sq = _mm_cvtss_f32(sum_sq_128);
+            __m128 sum_sq_hi = _mm256_extractf128_ps(sum_sq_vec1, 1);
+            __m128 sum_sq_lo = _mm256_extractf128_ps(sum_sq_vec1, 0);
+            sum_sq_lo = _mm_add_ps(sum_sq_lo, sum_sq_hi);
+            sum_sq_lo = _mm_hadd_ps(sum_sq_lo, sum_sq_lo);
+            sum_sq_lo = _mm_hadd_ps(sum_sq_lo, sum_sq_lo);
+            float sum_sq = _mm_cvtss_f32(sum_sq_lo);
             
-            // Handle remaining elements with unrolling
-            for (; i < C - 3; i += 4) {
-                float x0 = x[i], x1 = x[i+1], x2 = x[i+2], x3 = x[i+3];
-                sum += x0 + x1 + x2 + x3;
-                sum_sq += x0*x0 + x1*x1 + x2*x2 + x3*x3;
-            }
+            // Handle remaining elements
             for (; i < C; i++) {
                 float xi = x[i];
                 sum += xi;
