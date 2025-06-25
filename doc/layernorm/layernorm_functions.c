@@ -55,17 +55,31 @@ void layernorm_forward(float* out, float* mean, float* rstd,
                 sum_sq_vec1 = _mm256_fmadd_ps(x_vec, x_vec, sum_sq_vec1);
             }
             
-            // Optimized horizontal reduction using manual element extraction
-            float sum_array[8], sum_sq_array[8];
-            _mm256_storeu_ps(sum_array, sum_vec1);
-            _mm256_storeu_ps(sum_sq_array, sum_sq_vec1);
+            // Ultra-optimized horizontal reduction using specialized intrinsics
+            // Split 256-bit vectors into 128-bit halves and use efficient horizontal adds
+            __m128 sum_low = _mm256_castps256_ps128(sum_vec1);
+            __m128 sum_high = _mm256_extractf128_ps(sum_vec1, 1);
+            __m128 sum_128 = _mm_add_ps(sum_low, sum_high);
             
-            float sum = sum_array[0] + sum_array[1] + sum_array[2] + sum_array[3] + 
-                       sum_array[4] + sum_array[5] + sum_array[6] + sum_array[7];
-            float sum_sq = sum_sq_array[0] + sum_sq_array[1] + sum_sq_array[2] + sum_sq_array[3] + 
-                          sum_sq_array[4] + sum_sq_array[5] + sum_sq_array[6] + sum_sq_array[7];
+            __m128 sum_sq_low = _mm256_castps256_ps128(sum_sq_vec1);
+            __m128 sum_sq_high = _mm256_extractf128_ps(sum_sq_vec1, 1);
+            __m128 sum_sq_128 = _mm_add_ps(sum_sq_low, sum_sq_high);
             
-            // Handle remaining elements
+            // Use dual horizontal adds for maximum efficiency
+            sum_128 = _mm_hadd_ps(sum_128, sum_128);
+            sum_128 = _mm_hadd_ps(sum_128, sum_128);
+            sum_sq_128 = _mm_hadd_ps(sum_sq_128, sum_sq_128);
+            sum_sq_128 = _mm_hadd_ps(sum_sq_128, sum_sq_128);
+            
+            float sum = _mm_cvtss_f32(sum_128);
+            float sum_sq = _mm_cvtss_f32(sum_sq_128);
+            
+            // Handle remaining elements with optimized unrolling
+            for (; i < C - 3; i += 4) {
+                float x0 = x[i], x1 = x[i+1], x2 = x[i+2], x3 = x[i+3];
+                sum += x0 + x1 + x2 + x3;
+                sum_sq += x0*x0 + x1*x1 + x2*x2 + x3*x3;
+            }
             for (; i < C; i++) {
                 float xi = x[i];
                 sum += xi;
@@ -74,7 +88,10 @@ void layernorm_forward(float* out, float* mean, float* rstd,
             
             float m = sum * inv_C;
             float v = sum_sq * inv_C - m * m;
-            float s = 1.0f / sqrtf(v + eps);
+            // Use fast reciprocal square root approximation followed by Newton-Raphson refinement
+            float rsqrt_approx = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(v + eps)));
+            // One Newton-Raphson iteration for better precision: x = x * (1.5 - 0.5 * a * x * x)
+            float s = rsqrt_approx * (1.5f - 0.5f * (v + eps) * rsqrt_approx * rsqrt_approx);
             
             // Store mean and rstd early for better cache locality
             mean[b * T + t] = m;
